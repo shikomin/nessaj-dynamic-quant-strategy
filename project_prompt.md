@@ -61,26 +61,37 @@
 
 ### 2.1 策略矩阵
 
-| 策略ID | 名称 | 适用市况 | 开仓逻辑 | 平仓逻辑 | 参数 |
-|--------|------|---------|---------|---------|------|
-| 0 | 双均线突破 (MA Breakout) | 单边趋势 | 快MA上穿慢MA | 快MA下穿慢MA | fast_period, slow_period, stop_atr_mult |
-| 1 | 布林带回归 (BB Reversal) | 震荡市 | 价格触及下轨反弹 | 价格触及上轨或中轨 | bb_period, bb_std, stop_atr_mult |
-| 2 | 放量突破 (Vol Breakout) | 行情启动 | 成交量>N倍均量且价格突破M日高点 | 价格跌破入场日低点 | vol_ratio, lookback_days, stop_atr_mult |
-| 3 | ATR通道突破 (ATR Channel) | 高波动 | 价格突破N倍ATR通道上轨 | 价格回落到通道内 | atr_period, atr_mult, stop_atr_mult |
-| 4 | 动量突破 (Momentum) | 强势行情 | N日涨幅超过阈值且量能配合 | N日涨幅回落至阈值以下 | mom_period, mom_threshold, stop_atr_mult |
+| 策略ID | 名称 | 适用市况 | 参数 (5个) |
+|--------|------|---------|-----------|
+| 0 | 双均线突破 (MA Breakout) | 单边趋势 | fast_period, slow_period, stop_atr, profit_pct, max_hold |
+| 1 | 布林带回归 (BB Reversal) | 震荡市 | bb_period, bb_std, stop_atr, profit_pct, max_hold |
+| 2 | 放量突破 (Vol Breakout) | 行情启动 | vol_ratio, lookback, stop_atr, profit_pct, max_hold |
+| 3 | ATR通道突破 (ATR Channel) | 高波动 | atr_period, atr_mult, stop_atr, profit_pct, max_hold |
+| 4 | 动量突破 (Momentum) | 强势行情 | mom_period, mom_thresh, stop_atr, profit_pct, max_hold |
 
-**统一风控**：所有策略的第3参数均为 ATR 倍数止损（用ATR波动率自适应，避免固定百分比止损在高低波动市况下失效）。
+**5 参数解释**：
+- **p1, p2**: 策略专属入场信号参数
+- **p3 (stop_atr)**: ATR 倍数动态止损（自适应波动率）
+- **p4 (profit_pct)**: 止盈百分比（1%~10%）
+- **p5 (max_hold)** : 最大持仓分钟数（60~480），超时自动平仓
+
+**回测模拟项**：T+1(按交易日日期分组)、千1.5手续费、0.1%滑点、涨跌停检测(涨停买不进/跌停卖不出)、停牌缺口跳过
 
 ### 2.2 参数向量定义
 
 ```python
-# 每个策略的参数范围
+# 每个策略5个参数
 STRATEGY_PARAMS = {
-    0: {"fast_period": (2, 20),    "slow_period": (20, 120),  "stop_atr_mult": (1.0, 4.0)},
-    1: {"bb_period": (10, 50),     "bb_std": (1.5, 3.0),      "stop_atr_mult": (1.0, 4.0)},
-    2: {"vol_ratio": (1.5, 5.0),   "lookback_days": (5, 30),  "stop_atr_mult": (1.0, 4.0)},
-    3: {"atr_period": (5, 30),     "atr_mult": (1.5, 4.0),    "stop_atr_mult": (1.0, 4.0)},
-    4: {"mom_period": (5, 30),     "mom_threshold": (0.02, 0.10), "stop_atr_mult": (1.0, 4.0)},
+    0: {"fast_period": (2, 20),   "slow_period": (20, 120), "stop_atr": (1.0, 4.0),
+        "profit_pct": (0.01, 0.10), "max_hold": (60, 480)},
+    1: {"bb_period": (10, 50),    "bb_std": (1.5, 3.0),    "stop_atr": (1.0, 4.0),
+        "profit_pct": (0.01, 0.10), "max_hold": (60, 480)},
+    2: {"vol_ratio": (1.5, 5.0),  "lookback": (5, 30),    "stop_atr": (1.0, 4.0),
+        "profit_pct": (0.01, 0.10), "max_hold": (60, 480)},
+    3: {"atr_period": (5, 30),    "atr_mult": (1.5, 4.0), "stop_atr": (1.0, 4.0),
+        "profit_pct": (0.01, 0.10), "max_hold": (60, 480)},
+    4: {"mom_period": (5, 30),    "mom_thresh": (0.02, 0.10), "stop_atr": (1.0, 4.0),
+        "profit_pct": (0.01, 0.10), "max_hold": (60, 480)},
 }
 ```
 
@@ -193,6 +204,7 @@ samples = [
     {"features": ..., "strategy": mid1_sid,  "params": mid1_p,  "weight": 0.3},
     {"features": ..., "strategy": mid2_sid,  "params": mid2_p,  "weight": 0.3},
 ]
+# params = [p1, p2, p3, p4, p5]  5个参数
 ```
 
 ### 4.4 输出格式
@@ -218,7 +230,7 @@ Linear(256 → 128) + LayerNorm + ReLU + Dropout(0.3)
   ├─── 策略分类头 ──── Linear(128 → 64) + ReLU → Linear(64 → 5) + Softmax
   │    CrossEntropyLoss
   │
-  └─── 参数回归头 ──── Linear(128 → 64) + ReLU → Linear(64 → 3) + Sigmoid
+  └─── 参数回归头 ──── Linear(128 → 64) + ReLU → Linear(64 → 5) + Sigmoid
        SmoothL1Loss (Huber, β=0.5)
 ```
 
@@ -342,9 +354,10 @@ POST /predict
 ## 9. 关键注意事项
 
 1. **未来函数**：特征窗口和回测窗口必须时间分离。步长60条使特征窗口有重叠，但每个窗口的**回测窗口(标签)永不重叠**
-2. **T+1 交易约束**：回测引擎中当日买入最早次日卖出，不可同日买+卖
-3. **时间序列验证**：按时间切分训练/验证集，严禁 shuffle
-4. **交易摩擦**：回测计算千1.5手续费+滑点
+2. **T+1 交易约束**：按真实交易日日期分组，同一交易日不可买+卖。买入在第 N 天 → 最早第 N+1 天卖出
+3. **回测摩擦**：千1.5手续费 + 0.1%滑点 + 涨跌停检测（涨停买不进/跌停卖不出）
+4. **停牌缺口**：`has_gap()` 检测时间序列 ≥ 2小时断裂，跳过该窗口
+5. **时间序列验证**：按时间切分训练/验证集，严禁 shuffle
 5. **API 速率控制**：zzshare 有 Token 下 60次/分钟，fetcher 内置令牌桶限流器
 6. **参数平滑**：实盘输出做 EMA 平滑，避免策略频繁切换
 7. **多策略协同**：相邻时间的策略切换应有冷却期（如至少持仓30分钟后才允许换策略）

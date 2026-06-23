@@ -3,3 +3,5 @@ zzshare>=0.4.0
 pandas>=2.0
 pyyaml>=6.0
 akshare>=1.15
+optuna>=3.0
+pyarrow>=10.0
