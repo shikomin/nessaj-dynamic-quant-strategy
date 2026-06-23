@@ -1,203 +1,394 @@
 # A股动态参数量化交易系统 - 项目开发文档 (Project Prompt)
 
+> **修订版 v2.1** — 2026-06-22  
+> Phase 01 完成：数据管线跑通，100只股1分钟线+26维特征入库  
+> 设计演进：Plan B 负采样、stride=60、Pairwise Ranking Loss
+
+---
+
 ## 1. 项目概述 (Project Overview)
 
 ### 1.1 核心理念
-本项目旨在构建一个 **“动态参数量化交易系统”** 。其核心思想是：**固定交易策略的逻辑结构，但利用神经网络模型，根据当前市场行情动态调整策略的参数**。
+本项目构建一个 **"多策略动态参数量化交易系统"** 。核心思想：
 
-系统不预测股价涨跌，而是预测“在当前市场状态下，什么参数组合最有效”。通过这种方式，让策略具备自适应能力，避免传统量化策略在参数固化后失效的问题。
+1. **不做价格预测** — 不预测涨跌，而是预测"当前市场状态下，哪种策略 + 哪组参数最有效"
+2. **多策略覆盖** — 不同市况（趋势/震荡/高波/放量）用不同策略模板，模型自适应选择
+3. **分钟级粒度** — 用分钟线生成训练样本，数据量从 ~2000 条跃升到 40万+ 条
 
-### 1.2 技术架构总览
-- **编程语言**：Python (核心算法/回测/模型) + Java (后端服务) + TypeScript (前端界面)
-- **数据层**：TDengine (时序数据库) + MySQL (关系型数据库)
-- **计算层**：PyTorch (LSTM神经网络) + VectorBT / Pandas (向量化回测)
-- **应用层**：SpringBoot (业务API) + FastAPI (模型推理网关)
-- **前端层**：Vue3 + Vite + TypeScript + Electron (桌面客户端)
+### 1.2 原方案遗留问题
 
-### 1.3 数据流向
-1.  **数据采集**：AkShare -> TDengine (存储原始K线)。
-2.  **样本生成**：TDengine -> VectorBT (回测) -> Parquet (训练集)。
-3.  **模型训练**：Parquet -> PyTorch (LSTM训练) -> Model PTH (权重文件)。
-4.  **实盘推理**：实时行情 -> FastAPI (加载模型) -> 输出动态参数。
-5.  **交易执行**：动态参数 -> 交易接口 (QMT/PTrade) -> 执行买卖。
+| # | 硬伤 | 问题 | 修复 |
+|---|------|------|------|
+| 1 | **日线训练样本严重不足** | 日线 3天特征+20天回测窗口，每只股仅20个样本，100只=2000条，LSTM无法泛化 | 改分钟线：240条特征(1天)+240-480条回测(1-2天)，100只=40万样本 |
+| 2 | **单一策略模板** | 双均线只适用于趋势市，震荡/高波/量异动市况下失效 | 扩展到5个策略模板，模型同时输出策略选择+参数 |
+| 3 | **特征维度太少** | OHLCV+Amount(6维)不足以描述市场结构 | 扩充到**26维**：25维技术指标 + 1维市场情绪 |
+| 4 | **日线/分钟线割裂** | 设计中日线训练→分钟线推理，特征分布不一致 | 统一用分钟线：训练(分钟线生成样本)+推理(最近1天分钟线) |
+| 5 | **参数稳定性未考虑** | 模型单次推理参数可能日间剧烈跳变，无法实盘 | 加入参数平滑(EMA)、参数变化幅度惩罚 |
+| 6 | **无数据积累策略** | 东方财富分钟线API仅返回5天，无法获得更长历史 | 接入 **zzshare** (自在量化)，免费获取2005年至今分钟线 + 市场情绪数据 |
 
+### 1.3 技术架构总览
+```
+数据采集(zzshare→TDengine) → 特征工程(26维指标,含情绪) → 样本生成(Optuna多策略寻优→Parquet)
+→ 模型训练(LSTM多任务:策略分类+参数回归) → FastAPI推理 → SpringBoot业务 → Vue前端
+```
 
-## 2. 模块详细设计 (Module Specifications)
+| 层级 | 技术 |
+|:---|:---|
+| 数据获取 | **zzshare** (自在量化) — 免费，2005年至今分钟线，60次/分钟 |
+| 数据库 | TDengine 3.3.8 (时序) + MySQL 8.0 (关系) |
+| 特征工程 | Pandas + TA-Lib (RSI/MACD/布林/ATR/OBV等 + 市场情绪) |
+| 样本生成 | Optuna (多策略并行寻优) |
+| 回测引擎 | VectorBT + 自定义向量化引擎 |
+| 模型 | PyTorch LSTM + MLP 多任务学习 |
+| 模型服务 | FastAPI |
+| 后端 | SpringBoot 2.7+ |
+| 前端 | Vue3 + Vite + TypeScript + Electron + ECharts |
 
-### 2.1 数据采集与存储模块 (Data Module)
-**目标**：获取高质量的行情数据并实现高效存储。
+### 1.4 数据流向
+```
+1. 数据采集: zzshare → TDengine (分钟线+日线+情绪)
+2. 定时积累: 每日运行 data_fetcher.py → TDengine (增量, 100只股/分钟)
+3. 特征工程: TDengine → 26维技术指标 → Parquet
+4. 样本生成: Parquet → Optuna多策略回测 → (features, strategy_label, params_label) → train.parquet
+5. 模型训练: train.parquet → PyTorch LSTM → best_model.pth + scaler.pkl
+6. 实盘推理: 实时行情 → FastAPI (加载模型) → 策略类型 + 参数向量
+7. 参数平滑: 输出参数 → EMA平滑 → 交易执行
+```
 
-- **数据源**：使用 **AkShare** 库 (免费) 或 Tushare Pro (付费/积分)。
-- **标的池**：沪深300成分股 (约300只，初期建议筛选流动性前100只)。
-- **时间粒度**：
-    - **训练用**：日线数据 (复权因子处理)。
-    - **推理用**：1分钟/5分钟 K线 (用于捕捉近期微观结构)。
-- **存储设计 (TDengine)**：
-    - 创建超级表 `kline_daily`，Tags: `stock_code`，Columns: `ts`, `open`, `high`, `low`, `close`, `volume`, `amount`。
-    - 创建普通表 `stock_strategy_params` 用于存储历史模型输出的参数及对应收益，用于后续监控。
+---
 
-### 2.2 核心策略逻辑 (Fixed Super-Strategy)
-**目标**：定义一个逻辑固定、参数可变的策略模板。
+## 2. 多策略模板设计 (Multi-Strategy Templates)
 
-- **策略原型**：**双均线通道突破 + 动态止损** (作为MVP)。
-- **逻辑描述**：
-    1.  当 `短期均线` (参数1) 上穿 `长期均线` (参数2) 时开仓。
-    2.  持仓过程中，动态止盈止损：价格跌破开仓价减去 `止损百分比` (参数3) 时平仓。
-    3.  当 `短期均线` 下穿 `长期均线` 时平仓。
-- **参数向量定义**：`[short_window, long_window, stop_loss_percent]`。
-    - 范围限制：short_window (2-20)，long_window (20-120)，stop_loss (0.01-0.10)。
+### 2.1 策略矩阵
 
-### 2.3 训练集样本生成模块 (Data Labeling & Generation)
-**目标**：利用历史数据回测，生成 `(行情特征, 最优参数)` 的配对数据。
+| 策略ID | 名称 | 适用市况 | 开仓逻辑 | 平仓逻辑 | 参数 |
+|--------|------|---------|---------|---------|------|
+| 0 | 双均线突破 (MA Breakout) | 单边趋势 | 快MA上穿慢MA | 快MA下穿慢MA | fast_period, slow_period, stop_atr_mult |
+| 1 | 布林带回归 (BB Reversal) | 震荡市 | 价格触及下轨反弹 | 价格触及上轨或中轨 | bb_period, bb_std, stop_atr_mult |
+| 2 | 放量突破 (Vol Breakout) | 行情启动 | 成交量>N倍均量且价格突破M日高点 | 价格跌破入场日低点 | vol_ratio, lookback_days, stop_atr_mult |
+| 3 | ATR通道突破 (ATR Channel) | 高波动 | 价格突破N倍ATR通道上轨 | 价格回落到通道内 | atr_period, atr_mult, stop_atr_mult |
+| 4 | 动量突破 (Momentum) | 强势行情 | N日涨幅超过阈值且量能配合 | N日涨幅回落至阈值以下 | mom_period, mom_threshold, stop_atr_mult |
 
-- **时间窗口设计** (重点：防未来函数)：
-    - **特征窗口 (Feature Window)**：`[T-3天, T时刻]` 的历史行情 (作为模型输入)。
-    - **回测窗口 (Backtest Window)**：`[T时刻, T+20天]` (作为策略执行期)。
-    - **关键约束**：两个窗口**不能重叠**，且采样步长必须大于窗口总长度，防止数据交叉泄露。
-- **最优参数寻优 (Label Generation)**：
-    - 针对每个回测窗口，使用 **Optuna** 框架在参数空间内进行随机搜索。
-    - **评价指标**：寻找该时间段内 **Calmar比率** (年化收益/最大回撤) 最高的参数组合，作为该样本的标签 (Label)。
-- **输出格式**：保存为 **Parquet** 文件，包含字段：`features` (数组), `labels` (数组), `sharpe_ratio` (浮点, 用于加权损失)。
+**统一风控**：所有策略的第3参数均为 ATR 倍数止损（用ATR波动率自适应，避免固定百分比止损在高低波动市况下失效）。
 
-### 2.4 神经网络模型设计 (Model Architecture)
-**目标**：构建一个能够从时序数据中提取特征并回归出策略参数的模型。
+### 2.2 参数向量定义
 
-- **模型类型**：**LSTM + 全连接 (MLP)** 回归模型。
-- **输入层**：
-    - Shape: `(Batch_Size, Sequence_Length=3天, Feature_Num=6)`。
-    - 特征维度：`Open`, `High`, `Low`, `Close`, `Volume`, `Amount` (需归一化)。
-- **隐藏层**：
-    1.  LSTM 层: `hidden_size=128`, `num_layers=2`, `dropout=0.3`。
-    2.  全连接层 1: `Linear(128 -> 64)`, 激活函数 `ReLU`。
-    3.  Dropout: `p=0.3`。
-- **输出层**：
-    - `Linear(64 -> 3)` (对应3个策略参数)。
-    - **激活函数约束**：使用 `Sigmoid` 将输出映射到参数定义域内 (例如 `output * (max-min) + min`)。
-- **损失函数**：**加权均方误差 (Weighted MSE)**。
-    - 只对收益为正的样本进行强学习，亏损样本权重设为 `0.1` 或丢弃。
-    - 公式：`Loss = mean(weight * (pred - label)^2)`。
-- **优化器**：`Adam`, `learning_rate = 0.001`。
+```python
+# 每个策略的参数范围
+STRATEGY_PARAMS = {
+    0: {"fast_period": (2, 20),    "slow_period": (20, 120),  "stop_atr_mult": (1.0, 4.0)},
+    1: {"bb_period": (10, 50),     "bb_std": (1.5, 3.0),      "stop_atr_mult": (1.0, 4.0)},
+    2: {"vol_ratio": (1.5, 5.0),   "lookback_days": (5, 30),  "stop_atr_mult": (1.0, 4.0)},
+    3: {"atr_period": (5, 30),     "atr_mult": (1.5, 4.0),    "stop_atr_mult": (1.0, 4.0)},
+    4: {"mom_period": (5, 30),     "mom_threshold": (0.02, 0.10), "stop_atr_mult": (1.0, 4.0)},
+}
+```
 
-### 2.5 后端服务与模型部署 (Backend & Serving)
-**目标**：将训练好的模型部署为微服务，供Java后端调用。
+---
 
-- **Java SpringBoot**：
-    - 负责业务逻辑、用户鉴权、策略管理。
-    - 提供WebSocket接口，向前端推送实时计算结果。
-- **Python FastAPI** (模型网关)：
-    - 加载 `model.pth` 权重文件。
-    - 接收来自Java后端的请求 (输入: 股票代码 + 时间戳)。
-    - 从TDengine读取该股票近3日数据，经预处理后输入模型推理。
-    - 返回推理结果 (策略参数向量) 给Java后端。
+## 3. 数据处理与特征工程 (Data & Features)
 
-### 2.6 前端监控与可视化 (Frontend Dashboard)
-**目标**：提供一个可视化的桌面工具，监控策略运行状态。
+### 3.1 数据采集策略
 
-- **技术栈**：Vue3 + Vite + TypeScript + Electron + ECharts。
-- **核心界面**：
-    1.  **K线图**：显示标的股票K线，叠加显示模型实时推荐的均线参数 (动态均线)。
-    2.  **参数面板**：显示当前模型推理出的 `[Short, Long, Stop]` 数值。
-    3.  **回测进度条**：当进行回测样本生成时，显示进度百分比。
-    4.  **历史表现**：展示模型参数的历史变化曲线及对应的收益回撤图。
+| 数据类型 | 频率 | 来源 | 历史长度 | 用途 |
+|---------|------|------|---------|------|
+| 1分钟K线 | 首次全量 + 每日增量 | **zzshare** | 2005年至今 (20年+) | 特征提取 + 样本生成 + 推理 |
+| 5分钟K线 | 首次全量 + 每日增量 | zzshare | 2005年至今 | 备选特征粒度 |
+| 日线K线 | 首次全量 + 每日增量 | zzshare | 2005年至今 | 辅助指标(MA20/60位置) |
+| 市场情绪K线 | 每日定时 | zzshare | 全量 | 第26维情绪特征 |
 
+**数据源切换**：从 AkShare (5天限制) 切换到 **zzshare** (自在量化)，免费 API，有 Token 下 60次/分钟速率限制。首次全量拉取 100只股 × 2年 ≈ 8小时，后续每日增量 1分钟完成。
 
-## 3. 实施步骤 (Action Plan for AI Coding Assistant)
+**代码格式**：zzshare 使用 `600036.SH` / `301217.SZ` 格式，与内部 `sh600036` / `sz301217` 不同，在 fetcher 层做映射。
 
-请按照以下步骤协助生成代码。**请优先完成步骤1-3，确保数据流打通后再进行模型训练。**
+### 3.2 特征工程（26维输入向量）
 
-### 第一阶段：基础设施搭建 (Day 1-2)
-- [ ] **任务 1.1**：编写 Python 脚本 `data_fetcher.py`。
-    - 使用 `akshare` 获取沪深300列表。
-    - 循环下载100只股票近2年的日线复权数据。
-    - 建立TDengine连接，将数据批量写入超级表。
-- [ ] **任务 1.2**：配置 `application.yml` (SpringBoot) 连接 MySQL 和 TDengine。
-- [ ] **任务 1.3**：初始化 Vue3 + Electron 项目，配置 ECharts 组件。
+| 类别 | 特征 | 维度 | 说明 |
+|------|------|------|------|
+| 价格基础 | open, high, low, close | 4 | 原始价格 (RobustScaler归一化) |
+| 成交量 | volume, volume_ma5, volume_ratio | 3 | 成交量 + 5日均量 + 量比 |
+| 趋势类 | ma5, ma10, ma20, ma60 | 4 | 多周期均线/当前价比值 |
+| 动量类 | rsi_6, rsi_14, macd, macd_signal, macd_hist | 5 | RSI + MACD |
+| 波动类 | atr_14, bb_upper, bb_lower, bb_width | 4 | ATR + 布林带 |
+| 量价类 | obv, mfi_14 | 2 | OBV + 资金流量指标 |
+| 市场结构 | amplitude_pct, turnover_pct, up_down_ratio | 3 | 振幅/换手率/涨跌比 |
+| **情绪** | **market_sentiment** | **1** | **每日市场情绪K线值 (zzshare market_sentiment)** |
 
-### 第二阶段：样本生产流水线 (Day 3-5)
-- [ ] **任务 2.1**：编写 `backtest_engine.py`。
-    - 定义核心策略类 (继承自 `vectorbt` 或使用 Pandas 向量化计算)。
-    - 实现函数：`evaluate_params(stock_code, start_date, params)` 返回该时间段的收益率。
-- [ ] **任务 2.2**：编写 `sample_generator.py`。
-    - 使用 `Optuna` 对每个时间窗口进行参数寻优。
-    - 保存特征和标签到 `data/train.parquet`。
-    - **注意**：实现滑动窗口时，步长必须大于窗口长度 (防止重叠)。
+**输出**：每只股票每分钟生成一条 26 维特征向量，240条构成一天的输入序列。
 
-### 第三阶段：模型训练与验证 (Day 6-9)
-- [ ] **任务 3.1**：编写 `dataset.py`。
-    - 实现 `torch.utils.data.IterableDataset`，读取 Parquet 文件。
-    - 实现数据标准化 (StandardScaler) 并保存 scaler.pkl。
-- [ ] **任务 3.2**：编写 `model.py`。
-    - 构建 LSTM + MLP 网络结构。
-    - 实现加权损失函数 (Weighted MSELoss)。
-- [ ] **任务 3.3**：编写 `train.py`。
-    - 实现训练循环，使用验证集监控过拟合。
-    - 保存最佳模型权重到 `models/best_model.pth`。
-    - 绘制训练损失曲线并保存为 `loss_plot.png`。
+### 3.3 市场情绪数据
 
-### 第四阶段：服务集成与实盘模拟 (Day 10-12)
-- [ ] **任务 4.1**：编写 `fastapi_app.py`。
-    - 加载模型和标准化器。
-    - 定义接口 `POST /predict`，接收 `stock_code`，查询TDengine最近3天数据，返回JSON格式的参数。
-- [ ] **任务 4.2**：SpringBoot 集成。
-    - 编写 `RestTemplate` 调用 Python 服务。
-    - 编写 WebSocket 处理器，将结果推送到前端。
-- [ ] **任务 4.3**：前端联调。
-    - 接收WebSocket数据，更新ECharts图表中的均线数值。
+zzshare 提供每日市场情绪K线，格式为 OHLC+K 线结构，存储于 TDengine `market_sentiment` 超级表：
 
+| 子表 | 用途 | 数据模型 |
+|------|------|------|
+| `sent_daily` | `api.market_sentiment()` 每日情绪K线 | model='market_sentiment' |
+| `sent_hot` | `api.market_hot_sentiment()` 热门情绪 | model='market_hot_sentiment' |
+| `sent_trend` | `api.sentiment_trend()` 情绪趋势 | model='sentiment_trend' |
 
-## 4. 技术栈详细清单 (Tech Stack Details)
+情绪值作为第 26 维特征，参与模型输入，让模型感知整体市场气氛（贪婪/恐惧），有助于策略类型选择（如情绪高涨时倾向动量策略，恐慌时倾向布林带反转）。
+
+### 3.4 标准化
+- 训练集拟合 `RobustScaler`（抗异常值），保存为 `models/scaler.pkl`
+- 推理时加载同一 scaler 做变换
+
+---
+
+## 4. 训练样本生成 (Sample Generation)
+
+### 4.1 滑动窗口设计（分钟线版本）
+
+```
+                    时间轴 →
+|------ 特征窗口(1天) ------|---- 回测窗口(1-2天) ----|
+         240条1分钟线             240~480条1分钟线
+
+步长 = 60条 (1小时)，相邻窗口特征有180条重叠，但标签(回测窗口)不重叠
+```
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| 特征窗口 | 240条 (1个交易日) | 26维特征，作为模型输入 |
+| 回测窗口 | 240~480条 (1-2个交易日) | 短线交易周期 |
+| **步长** | **60条 (1小时)** | 1小时滑动，样本量×4 |
+| 数据量/股 | ~1000个窗口 (1年分钟线) | (60480-480)/60+1 |
+| 100只股总窗口 | ~10万 | ×4 = 40万条训练记录 |
+
+> **重叠窗口可行**：相邻窗口特征有重叠，但回测窗口对应不同交易日，标签完全不同。LSTM 学到"同样RSI值在不同时间点，最优策略可能不同"的时序敏感性。
+
+### 4.2 Optuna 多策略寻优
+
+对每个时间窗口，Optuna 搜索空间包含：
+1. **策略选择**：categorical [0,1,2,3,4]
+2. **对应策略的参数**：在该策略的范围内搜索
+
+```python
+def objective(trial, df_window):
+    strategy_id = trial.suggest_categorical("strategy", [0,1,2,3,4])
+    params = {}
+    for name, (low, high) in STRATEGY_PARAMS[strategy_id].items():
+        params[name] = trial.suggest_float(name, low, high)
+    
+    # 执行该策略在该窗口的回测
+    result = backtest_engine.run(df_window, strategy_id, params)
+    return result.calmar_ratio  # 最大化卡玛比率
+```
+
+**每个窗口**：Optuna 运行 **50 trials**，记录所有 (策略, 参数, Calmar) 三元组。
+
+### 4.3 Plan B 负采样标签格式
+
+每个窗口生成 **4条训练记录**，而非仅最优解：
+
+| 记录 | 来源 | 权重 | 作用 |
+|------|------|------|------|
+| 正样本 ×1 | Calmar 最高的 trial | **1.0** | 这种行情该这样做 |
+| 差负样本 ×1 | Calmar 最低的 trial | **0.1** | 千万避开这个 |
+| 中负样本 ×2 | 随机中等 Calmar trials | **0.3** | 丰富负样本多样性 |
+
+```python
+samples = [
+    {"features": ..., "strategy": best_sid,  "params": best_p,  "weight": 1.0},
+    {"features": ..., "strategy": worst_sid, "params": worst_p, "weight": 0.1},
+    {"features": ..., "strategy": mid1_sid,  "params": mid1_p,  "weight": 0.3},
+    {"features": ..., "strategy": mid2_sid,  "params": mid2_p,  "weight": 0.3},
+]
+```
+
+### 4.4 输出格式
+- 文件：`data/train.parquet`, `data/val.parquet`
+- 按时间切分：前80%训练，后20%验证（严禁随机打乱）
+- 所有浮点字段为 float32
+
+---
+
+## 5. 模型设计 (Model Architecture)
+
+### 5.1 多任务 LSTM 网络
+
+```
+输入: (Batch, 240, 26)
+  │
+  ▼
+LSTM(hidden=128, layers=2, dropout=0.3, bidirectional=True)
+  │
+  ▼ [取最后时间步 + 拼接双向]
+Linear(256 → 128) + LayerNorm + ReLU + Dropout(0.3)
+  │
+  ├─── 策略分类头 ──── Linear(128 → 64) + ReLU → Linear(64 → 5) + Softmax
+  │    CrossEntropyLoss
+  │
+  └─── 参数回归头 ──── Linear(128 → 64) + ReLU → Linear(64 → 3) + Sigmoid
+       SmoothL1Loss (Huber, β=0.5)
+```
+
+### 5.2 输出设计
+- **策略分类**：5类 softmax，取 argmax 为最终策略
+- **参数回归**：Sigmoid 输出 [0,1]，再映射到各策略的参数定义域
+- 推理时先确定策略，再用对应定义域解码参数
+
+### 5.3 损失函数 (Plan B — 加权联合损失)
+
+```python
+def joint_loss(strategy_logits, strategy_label, param_pred, param_label, 
+               calmar_weight, sample_weight):
+    """
+    sample_weight: Plan B 权重 (正样本=1.0, 差负=0.1, 中负=0.3)
+    效果: 模型必须学会"哪种行情下什么策略是优/中/差"
+    """
+    # 策略分类：加权交叉熵
+    ce = F.cross_entropy(strategy_logits, strategy_label, reduction='none')
+    ce = (ce * sample_weight).mean()
+    
+    # 参数回归：Huber Loss（SmoothL1）
+    huber = F.smooth_l1_loss(param_pred, param_label, beta=0.5, reduction='none')
+    huber = (huber.mean(dim=1) * calmar_weight * sample_weight).mean()
+    
+    return ce + 0.5 * huber
+```
+
+> **设计意图**：不追求精确回归参数值（回测标签本身有噪声），而是让模型学到 **相对排序**——"策略A > 策略B > 策略C"。低权重负样本防止模型盲目模仿所有参数组合。
+
+### 5.4 训练配置
+- 优化器：AdamW (lr=1e-3, weight_decay=1e-4)
+- 学习率调度：ReduceLROnPlateau (patience=10, factor=0.5)
+- 早停：验证Loss 20 epoch不降即停止
+- Batch size：64
+- Epochs：最大200
+
+### 5.5 参数平滑（实盘推理）
+
+```python
+# 防止参数日间剧烈跳变
+smoothed_params = 0.7 * current_prediction + 0.3 * previous_params
+```
+
+---
+
+## 6. 后端与部署 (Backend & Serving)
+
+### 6.1 FastAPI 推理服务 (`fastapi_app.py`)
+
+```
+POST /predict
+  Body: {"stock_code": "sh600036"}
+  
+  逻辑:
+  1. 查询 TDengine: 最近240条1分钟线
+  2. 特征工程: 26维特征 (使用 scaler.pkl 标准化)
+  3. 模型推理: → (strategy_id, params)
+  4. 参数平滑: EMA with 历史输出
+  5. 返回: {"strategy_id": 2, "params": [3.0, 10, 2.5]}
+```
+
+### 6.2 容错机制
+- 模型服务不可用时 → 返回默认保守参数
+- TDengine 查询超时 → 使用缓存的最新特征
+- 单只股票失败 → 不影响其他股票
+
+### 6.3 SpringBoot 集成
+- 定时拉取所有标的的推理结果（每分钟轮询）
+- WebSocket 推送策略变更到前端
+- MySQL 存储推理历史 `strategy_params` 表
+
+### 6.4 前端可视化
+- K线图上叠加"当前激活策略"类型标记
+- 参数面板：显示5个策略的参数 + 当前选中策略高亮
+- 历史参数变化折线图（可回溯策略切换点）
+- 回测进度条
+
+---
+
+## 7. 实施步骤 (Action Plan v2)
+
+### 第一阶段：数据管线 ✅ (完成)
+- [x] **任务 1.1**：`data_fetcher.py` — zzshare 数据采集 + TDengine 存储 (分钟线+情绪)
+- [x] **任务 1.2**：`stock_screener.py` — 筛选短线标的 → `stock_list_100.csv` + 80只云服务器运行中
+- [x] **任务 1.3**：`feature_engineering.py` — 26维特征计算 + scaler
+- [ ] **任务 1.4**：`fill_gaps.py` — 补缺漏交易日 (云服务器跑完后生成)
+
+### 第二阶段：样本生产
+- [ ] **任务 2.1**：`backtest_engine.py` — 5策略回测引擎 (T+1约束)
+- [ ] **任务 2.2**：`sample_generator.py` — 滑动窗口(stride=60) + Optuna 50 trials + Plan B 负采样 → Parquet
+- [ ] **任务 2.2**：`sample_generator.py` — 滑动窗口 + Optuna多策略寻优 → Parquet
+
+### 第三阶段：模型训练
+- [ ] **任务 3.1**：`dataset.py` — IterableDataset 读取 Parquet
+- [ ] **任务 3.2**：`model.py` — LSTM多任务网络
+- [ ] **任务 3.3**：`train.py` — 训练 + 早停 + 验证
+
+### 第四阶段：服务集成
+- [ ] **任务 4.1**：`fastapi_app.py` — 推理服务 + 参数平滑
+- [ ] **任务 4.2**：SpringBoot 调用 + WebSocket + 前端联调
+
+---
+
+## 8. 技术栈清单
 
 | 层级 | 技术/框架 | 版本/备注 |
-| :--- | :--- | :--- |
-| **数据获取** | AkShare | `pip install akshare` |
-| **数据库-时序** | TDengine | v3.0+ (使用 RESTful 接口或 Python Connector) |
-| **数据库-关系** | MySQL | 8.0+ (使用 MyBatis-Plus) |
-| **回测计算** | VectorBT | `pip install vectorbt` (向量化计算，速度极快) |
-| **参数寻优** | Optuna | `pip install optuna` (用于生成训练标签) |
-| **机器学习** | PyTorch | 2.0+ (CUDA 可选，CPU亦可) |
-| **模型服务** | FastAPI | 异步高性能，自动生成Swagger文档 |
-| **后端框架** | SpringBoot | 2.7+ (Java 8 或 17) |
-| **前端框架** | Vue3 + Vite | 组合式API (Composition API) |
-| **桌面壳子** | Electron | 用于打包桌面应用 |
-| **图表引擎** | ECharts | 用于绘制K线、收益曲线 |
+|:---|:---|:---|
+| 数据获取 | **zzshare** (自在量化) | 免费，60次/分钟，2005年至今分钟线 + 情绪数据 |
+| 特征计算 | TA-Lib | `pip install TA-Lib` (C库需单独安装) 或 `ta` (纯Python) |
+| 数据库 | TDengine 3.3.8 | Docker部署，taos-ws-py连接 |
+| 回测 | VectorBT + 自定义 | 向量化日线回测，逐笔分钟线仿真 |
+| 参数寻优 | Optuna | `pip install optuna` |
+| 机器学习 | PyTorch 2.0+ | LSTM + MLP |
+| 模型服务 | FastAPI | 异步，/predict 接口 |
+| 后端 | SpringBoot 2.7+ | Java业务层 |
+| 前端 | Vue3 + Vite + Electron + ECharts | 桌面端 |
 
+---
 
-## 5. 关键注意事项与风险提示
+## 9. 关键注意事项
 
-1.  **未来函数 (Look-ahead Bias)**：
-    - **禁止**在生成训练标签时使用窗口之外的数据。
-    - 切分训练集/验证集时，必须按**时间顺序**切分 (例如 2018-2021训练，2022验证)。**严禁**随机打乱时间序列。
-2.  **过拟合防范**：
-    - 监控验证集Loss，若验证集Loss上升而训练集Loss下降，立即早停 (Early Stopping)。
-    - 在LSTM层后添加Dropout。
-3.  **交易摩擦**：
-    - 回测和实盘计算中，必须考虑 **千分之1.5** 的手续费和滑点，否则回测收益会严重失真。
-4.  **系统解耦**：
-    - Java后端和Python模型服务不要强依赖。模型服务崩溃时，Java后端应能返回默认安全参数 (如保守的均线组合)，保证系统可用性。
+1. **未来函数**：特征窗口和回测窗口必须时间分离。步长60条使特征窗口有重叠，但每个窗口的**回测窗口(标签)永不重叠**
+2. **T+1 交易约束**：回测引擎中当日买入最早次日卖出，不可同日买+卖
+3. **时间序列验证**：按时间切分训练/验证集，严禁 shuffle
+4. **交易摩擦**：回测计算千1.5手续费+滑点
+5. **API 速率控制**：zzshare 有 Token 下 60次/分钟，fetcher 内置令牌桶限流器
+6. **参数平滑**：实盘输出做 EMA 平滑，避免策略频繁切换
+7. **多策略协同**：相邻时间的策略切换应有冷却期（如至少持仓30分钟后才允许换策略）
+8. **系统解耦**：Python模型服务挂了，Java返回默认策略+保守参数
+9. **Plan B 负采样**：每窗口4条记录(1正+3负)，模型不仅学会"什么好"，也学会"什么差"
 
+---
 
-## 6. 项目文件结构建议 (Project Tree)
+## 10. 项目文件结构
 
 ```text
 nessaj-dynamic-quant-strategy/
-├── backend_java/                # SpringBoot 后端
+├── project_prompt.md
+├── backend_java/                    # SpringBoot 后端
 │   ├── src/main/java/
 │   └── pom.xml
-├── python_core/                 # Python 核心计算模块
-│   ├── data/                    # 数据存储
-│   │   ├── raw/                 # 原始CSV (备份)
-│   │   └── train.parquet        # 训练集
-│   ├── models/                  # 模型存储
+├── python_core/                     # Python 核心
+│   ├── config/
+│   │   ├── config.yaml              # TDengine连接 + 采集参数
+│   │   └── strategy_templates.yaml  # 策略模板定义
+│   ├── src/
+│   │   ├── data_fetcher.py          # 数据采集 (zzshare→TDengine, 含情绪)
+│   │   ├── fill_gaps.py              # 补缺漏交易日
+│   │   ├── utils.py                  # 共享工具 (代理清理)  
+│   │   ├── stock_screener.py        # 选股筛选
+│   │   ├── feature_engineering.py   # 26维特征工程
+│   │   ├── backtest_engine.py       # 多策略回测引擎
+│   │   ├── sample_generator.py      # Optuna样本生成
+│   │   ├── dataset.py               # PyTorch数据集
+│   │   ├── model.py                 # LSTM多任务网络
+│   │   ├── train.py                 # 训练脚本
+│   │   └── fastapi_app.py           # 推理服务
+│   ├── data/
+│   │   ├── stock_list_100.csv       # 100只短线标的
+│   │   ├── train.parquet
+│   │   └── logs/
+│   ├── models/
 │   │   ├── best_model.pth
 │   │   └── scaler.pkl
-│   ├── data_fetcher.py          # 数据采集
-│   ├── sample_generator.py      # 回测生成样本 (核心)
-│   ├── model.py                 # 网络定义
-│   ├── train.py                 # 训练脚本
-│   └── fastapi_app.py           # 推理服务
-├── frontend_vue/                # Vue3 前端
+│   └── requirements.txt
+├── frontend_vue/                    # Vue3 前端
 │   ├── src/
-│   │   ├── components/          # K线图、参数面板
+│   │   ├── components/
 │   │   └── views/
 │   └── package.json
 └── README.md
+```

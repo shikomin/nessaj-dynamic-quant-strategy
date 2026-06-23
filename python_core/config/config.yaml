@@ -1,0 +1,27 @@
+tdengine:
+  host: "124.221.130.19"
+  port: 6041
+  database: "quant_dynamic"
+  username: "root"
+  password: "Nessaj@111"
+
+data:
+  stock_list: "stock_list.csv"
+  data_source: "zzshare"      # zzshare | akshare
+
+fetch:
+  retry_times: 3
+  retry_delay_base: 5
+  history_trading_days: 370
+  days_per_batch: 10
+  end_date: "20260622"          # 数据截止日期，不拉此日期之后的交易日
+
+zzshare:
+  token: "f77a73560e1dd47010952b147f120d2f35cf73612784e94afd4948f7ff3384e8"
+  rate_limit: 60              # 次/分钟
+  freq: "1min"                # 1min | 5min | 15min | 30min | 60min
+  collect_sentiment: true     # 是否采集市场情绪数据
+
+logger:
+  level: "INFO"
+  file: "data/logs/fetcher.log"

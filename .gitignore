@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+*.egg
+dist/
+build/
+venv/
+.venv/
+env/
+.env
+*.so
+
+# Data files (large, regenerated)
+*.parquet
+*.pth
+*.pkl
+python_core/data/raw/
+python_core/data/logs/*.log
+
+# Stock full list (too large, keep only filtered versions)
+python_core/stock_full_list_01.csv
+
+# Models
+python_core/models/*.pth
+python_core/models/*.pkl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Node / Frontend
+node_modules/
+frontend_vue/dist/
+frontend_vue/.vite/
+
+# Java
+backend_java/target/
+backend_java/*.class
+backend_java/*.jar
+backend_java/.mvn/
+
+# Docker
+docker-compose.override.yml
+
+# Temp scripts
+python_core/src/_select_stocks.py
+
+# Logs
+*.log
+!python_core/data/logs/.gitkeep
