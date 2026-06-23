@@ -1,0 +1,271 @@
+# 样本生成Python脚本异常退出问题追踪
+
+> **日期**: 2026-06-23  
+> **项目**: A股动态参数量化交易系统  
+> **涉及文件**: `sample_generator.py`, `sample_generator.log`  
+> **环境**: Docker容器 (py313-env), 宿主机内存3.61GB
+
+
+## 一、问题现象
+
+### 1.1 日志中断
+
+```log
+2026-06-23 15:12:04,355 [INFO]   sz300774: 60480条 → 997个窗口
+2026-06-23 15:27:19,792 [INFO]   sz300774: 跳过 54 个缺口窗口
+2026-06-23 15:27:19,792 [INFO]   sz300774: 3772条样本
+← 此处之后无任何日志，进程退出，无报错、无traceback →
+1.2 监控表现
+时间点	内存占用	事件
+15:27前	~2341MB	正常处理中
+15:27	2341MB → 1624MB	内存下降（非飙升）
+关键判断: 内存是下降而非飙升，说明不是OOM Killer强杀，而是进程主动/正常退出。
+
+二、根因分析
+2.1 触发链路
+text
+每只股票生成 3,772 条样本
+        ↓
+处理 15 只后: 3,772 × 15 = 56,580 条
+        ↓
+超过 WRITE_CHUNK_SIZE = 50,000
+        ↓
+触发 flush 刷盘逻辑
+        ↓
+pd.to_parquet(append=True) 执行失败
+        ↓
+异常未被捕获 → 进程退出
+        ↓
+最终合并检测到 df.empty → 执行 return
+        ↓
+日志无后续输出，进程静默退出
+2.2 代码缺陷定位
+缺陷1: to_parquet(append=True) 不可靠
+问题代码 (sample_generator.py 第180-185行):
+
+python
+if len(all_samples) >= 50000:
+    df_tmp = pd.DataFrame(all_samples)
+    df_tmp.to_parquet(tmp_path, index=False, engine='pyarrow',
+                      append=(flush_count > 0))  # ← 问题所在
+    logging.info(f"  flush {flush_count+1}: {len(all_samples)}条 → {tmp_path.name}")
+    all_samples.clear()
+    flush_count += 1
+原因:
+
+pyarrow 引擎的 append 参数实际不支持真正的追加写入
+
+第二次 flush 时 (flush_count > 0)，append=True 会抛出异常
+
+异常未被 try-except 捕获，导致进程直接退出
+
+缺陷2: 异常导致最终合并逻辑触发静默退出
+问题代码 (sample_generator.py 第200-208行):
+
+python
+if flush_count > 0 and tmp_path.exists():
+    df_tmp = pd.read_parquet(tmp_path)
+    df_mem = pd.DataFrame(all_samples) if all_samples else pd.DataFrame()
+    df = pd.concat([df_tmp, df_mem], ignore_index=True)
+    tmp_path.unlink()
+else:
+    df = pd.DataFrame(all_samples) if all_samples else pd.DataFrame()
+
+if df.empty:
+    logging.error("无样本生成")
+    return  # ← 进程在此静默退出，无后续日志
+原因:
+
+如果 to_parquet 写入失败，tmp_path 不存在或为空
+
+df 成为空 DataFrame
+
+触发 df.empty 分支，执行 return 退出
+
+没有打印任何错误信息，只有一条 "无样本生成" 日志（但刷盘失败时连这条都没打印出来，因为异常发生在上层）
+
+三、修复方案
+方案1: 修复 to_parquet append 逻辑（推荐）
+将 to_parquet 改为「读取-合并-写入」模式，避免使用不可靠的 append 参数：
+
+python
+if len(all_samples) >= 50000:
+    df_tmp = pd.DataFrame(all_samples)
+    
+    if flush_count == 0:
+        # 第一次写入，直接覆盖
+        df_tmp.to_parquet(tmp_path, index=False, engine='pyarrow')
+    else:
+        # 后续追加：先读已有数据，合并后再写入
+        if tmp_path.exists():
+            df_existing = pd.read_parquet(tmp_path)
+            df_combined = pd.concat([df_existing, df_tmp], ignore_index=True)
+            df_combined.to_parquet(tmp_path, index=False, engine='pyarrow')
+        else:
+            df_tmp.to_parquet(tmp_path, index=False, engine='pyarrow')
+    
+    logging.info(f"  flush {flush_count+1}: {len(all_samples)}条 → {tmp_path.name}")
+    all_samples.clear()
+    flush_count += 1
+方案2: 增加异常捕获
+在 flush 逻辑外层增加 try-except，确保即使刷盘失败也能继续：
+
+python
+try:
+    if len(all_samples) >= 50000:
+        df_tmp = pd.DataFrame(all_samples)
+        # ... 写入逻辑 ...
+        all_samples.clear()
+        flush_count += 1
+except Exception as e:
+    logging.error(f"  flush 失败: {e}，尝试降级方案")
+    # 降级：每只股票独立写入
+    for batch in all_samples:
+        # 单独处理
+        pass
+    all_samples.clear()
+方案3: 改用每只股票独立写入（最稳健）
+放弃累积刷盘模式，改为每只股票处理完立即追加到最终文件：
+
+python
+for s in stocks:
+    code = s.get('代码', '')
+    batch = generate_samples(code, td, args.trials)
+    
+    if not batch:
+        continue
+    
+    df_batch = pd.DataFrame(batch)
+    
+    # 直接追加到最终文件
+    if os.path.exists(train_path):
+        df_existing = pd.read_parquet(train_path)
+        df_combined = pd.concat([df_existing, df_batch], ignore_index=True)
+        df_combined.to_parquet(train_path, index=False, engine='pyarrow')
+    else:
+        df_batch.to_parquet(train_path, index=False, engine='pyarrow')
+    
+    logging.info(f"  {code}: 已追加 {len(batch)} 条到最终文件")
+方案4: 使用 fastparquet 引擎（替代方案）
+安装 fastparquet：
+
+bash
+pip install fastparquet
+修改代码：
+
+python
+df_tmp.to_parquet(tmp_path, index=False, engine='fastparquet', 
+                  append=(flush_count > 0))
+注意: fastparquet 对 append 的支持优于 pyarrow，但仍需测试验证。
+
+四、辅助排查命令
+4.1 检查容器状态和日志
+bash
+# 查看容器内存限制
+docker stats py313-env --no-stream
+
+# 查看容器日志（含 stderr）
+docker logs py313-env --tail 100
+
+# 进入容器检查临时文件
+docker exec -it py313-env bash
+ls -la /app/data/
+cat /app/data/samples_tmp.parquet
+4.2 测试 to_parquet append 行为
+python
+# 在容器内执行
+python -c "
+import pandas as pd
+df = pd.DataFrame({'a': [1,2,3]})
+df.to_parquet('/app/data/test.parquet', append=False)
+df.to_parquet('/app/data/test.parquet', append=True)  # 观察是否报错
+"
+4.3 查看进程退出码
+bash
+# 查看上次容器退出状态
+docker inspect py313-env --format='{{.State.ExitCode}}'
+五、建议的完整修复代码
+以下是 main() 函数中 flush 和合并逻辑的完整修复版本：
+
+python
+# 配置
+WRITE_CHUNK_SIZE = 50000
+tmp_path = PROJECT_ROOT / "data" / "samples_tmp.parquet"
+final_path = PROJECT_ROOT / "data" / "samples.parquet"
+flush_count = 0
+all_samples = []
+
+for idx, s in enumerate(stocks):
+    code = s.get('代码', '')
+    try:
+        batch = generate_samples(code, td, args.trials)
+        all_samples.extend(batch)
+        
+        # 刷盘保护
+        if len(all_samples) >= WRITE_CHUNK_SIZE:
+            df_tmp = pd.DataFrame(all_samples)
+            
+            try:
+                if flush_count == 0:
+                    df_tmp.to_parquet(tmp_path, index=False, engine='pyarrow')
+                else:
+                    if tmp_path.exists():
+                        df_existing = pd.read_parquet(tmp_path)
+                        df_combined = pd.concat([df_existing, df_tmp], ignore_index=True)
+                        df_combined.to_parquet(tmp_path, index=False, engine='pyarrow')
+                    else:
+                        df_tmp.to_parquet(tmp_path, index=False, engine='pyarrow')
+                
+                logging.info(f"  flush {flush_count+1}: {len(all_samples)}条 → {tmp_path.name}")
+                all_samples.clear()
+                flush_count += 1
+                
+            except Exception as e:
+                logging.error(f"  flush 失败: {e}")
+                # 降级：保存为独立文件
+                fallback_path = tmp_path.parent / f"samples_fallback_{flush_count}.parquet"
+                df_tmp.to_parquet(fallback_path, index=False)
+                logging.info(f"  降级保存至: {fallback_path.name}")
+                all_samples.clear()
+                flush_count += 1
+                
+    except Exception as e:
+        logging.error(f"  {code}: 样本生成失败: {e}")
+        continue
+
+# 最终合并
+if flush_count > 0 and tmp_path.exists():
+    df_tmp = pd.read_parquet(tmp_path)
+    df_mem = pd.DataFrame(all_samples) if all_samples else pd.DataFrame()
+    df = pd.concat([df_tmp, df_mem], ignore_index=True)
+    tmp_path.unlink()
+    
+    # 清理fallback文件并合并
+    for fb_path in tmp_path.parent.glob("samples_fallback_*.parquet"):
+        df_fb = pd.read_parquet(fb_path)
+        df = pd.concat([df, df_fb], ignore_index=True)
+        fb_path.unlink()
+else:
+    df = pd.DataFrame(all_samples) if all_samples else pd.DataFrame()
+
+if df.empty:
+    logging.error("无样本生成，请检查数据源和日志")
+    sys.exit(1)  # 明确退出码，便于外部监控
+
+# 后续处理...
+六、后续建议
+增加启动脚本守护：
+
+bash
+#!/bin/bash
+while true; do
+    python -u sample_generator.py --trials 50
+    EXIT_CODE=$?
+    echo "[$(date)] 进程退出，退出码: $EXIT_CODE，5秒后重启..." >> restart.log
+    sleep 5
+done
+降低刷盘阈值：将 WRITE_CHUNK_SIZE 从 50000 降至 10000，更频繁地刷盘，减少单次写入的数据量和失败风险
+
+增加进程退出码处理：在 main() 中使用 sys.exit(0) / sys.exit(1) 明确退出状态，便于外部脚本判断
+
+改用 fastparquet 引擎：在 requirements.txt 中添加 fastparquet，其 append 支持比 pyarrow 更可靠
