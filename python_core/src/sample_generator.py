@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
 """
-训练样本生成器 v2
-滑动窗口(stride=60) → Optuna 50 trials(5参数) → Plan B 负采样 → Parquet
-支持: 停牌缺口检测, T+1(按日期), 止盈止损
+训练样本生成器 v3 — 多进程 + 断点续跑 + 独立文件
+每只股票独立生成 → data/samples/{code}.parquet → merge_samples.py 合并
+
+用法:
+  python sample_generator.py                # 全量生成 (默认 2 workers)
+  python sample_generator.py --workers 2    # 指定并行数
+  python sample_generator.py --stock sh600036  # 单只股票
+  python sample_generator.py --dry-run        # 仅估算
 """
 import io
 import sys
 import time
 import logging
 import argparse
+import traceback
+from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
 
 from config import load_config, PROJECT_ROOT
 from logger import setup_logging
-from td_connector import TdConnector, ALL_COLS_FEATURE
+from td_connector import TdConnector, ALL_COLS_FEATURE, ALL_COLS_M_QUERY
 from backtest_engine import run_backtest, STRATEGY_PARAMS, has_gap
 from utils import disable_system_proxy
 
@@ -24,10 +32,7 @@ optuna = None
 FEATURE_WINDOW = 240
 BACKTEST_WINDOW = 480
 STRIDE = 60
-N_POSITIVE, N_WORST, N_MID = 1, 1, 2
-
-# 边生成边写入，避免 OOM
-WRITE_CHUNK_SIZE = 1000  # 每 1000 条 flush 一次
+OUTPUT_DIR_NAME = "samples"
 
 
 def _get_optuna():
@@ -39,39 +44,43 @@ def _get_optuna():
     return optuna
 
 
-def load_stock_list(csv_path: str) -> list[dict]:
-    path = PROJECT_ROOT / csv_path
-    if not path.exists():
-        return []
-    df = pd.read_csv(path, dtype=str)
-    return [{k.strip(): v.strip() if isinstance(v, str) else v for k, v in row.items()}
-            for _, row in df.iterrows()]
-
-
 def _features_to_bytes(arr: np.ndarray) -> bytes:
     buf = io.BytesIO()
     np.save(buf, arr.astype(np.float32))
     return buf.getvalue()
 
 
-def generate_samples(code: str, td: TdConnector, n_trials: int = 50) -> list[dict]:
+def _generate_one_stock(code: str, td: TdConnector, n_trials: int, out_dir: Path) -> dict:
+    """单只股票样本生成 → 写入 out_dir/{code}.parquet, 返回统计信息"""
+    out_path = out_dir / f"{code}.parquet"
+
+    # ── 断点续跑：已完成的跳过 ──
+    if out_path.exists() and out_path.stat().st_size > 1000:
+        try:
+            existing = pd.read_parquet(out_path)
+            if len(existing) > 0:
+                logging.info(f"  {code}: 已完成 ({len(existing)}条), 跳过")
+                return {'code': code, 'samples': len(existing), 'skipped': True}
+        except:
+            pass
+
+    # ── 一次性加载全量数据 ──
     table_f = f"f_{code}"
     table_m = f"m_{code}"
 
-    # 读取特征
     rows_f = td.query(f"SELECT * FROM {table_f} ORDER BY ts ASC")
     if not rows_f:
         logging.warning(f"  {code}: 无特征数据")
-        return []
+        return {'code': code, 'samples': 0, 'skipped': False}
+
     col_f = ['ts'] + ALL_COLS_FEATURE
     df_f = pd.DataFrame(rows_f, columns=col_f)
     df_f['ts'] = pd.to_datetime(df_f['ts'])
     for c in ALL_COLS_FEATURE:
         df_f[c] = pd.to_numeric(df_f[c], errors='coerce')
 
-    # 读取原始K线(需要 ts 列给 T+1 日期分组)
     rows_m = td.query(f"SELECT ts, open, high, low, close, volume FROM {table_m} ORDER BY ts ASC")
-    df_m = pd.DataFrame(rows_m, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
+    df_m = pd.DataFrame(rows_m, columns=ALL_COLS_M_QUERY)
     df_m['ts'] = pd.to_datetime(df_m['ts'])
     for c in ['open', 'high', 'low', 'close', 'volume']:
         df_m[c] = pd.to_numeric(df_m[c], errors='coerce')
@@ -80,31 +89,43 @@ def generate_samples(code: str, td: TdConnector, n_trials: int = 50) -> list[dic
     total_windows = max(0, (n_total - FEATURE_WINDOW - BACKTEST_WINDOW) // STRIDE + 1)
     logging.info(f"  {code}: {n_total}条 → {total_windows}个窗口")
 
+    # ── 内存中滑动窗口 + Optuna ──
     samples = []
+    chunk_files = []
     skipped_gap = 0
+
+    def _flush_chunk():
+        nonlocal samples
+        if not samples:
+            return
+        p = out_dir / f"{code}_{len(chunk_files):04d}.tmp.parquet"
+        pd.DataFrame(samples).to_parquet(p, index=False, engine='pyarrow')
+        chunk_files.append(p)
+        logging.debug(f"    {code}: flush {len(samples)}条 → {p.name}")
+        samples.clear()
 
     for start in range(0, n_total - FEATURE_WINDOW - BACKTEST_WINDOW + 1, STRIDE):
         feat_end = start + FEATURE_WINDOW
         bt_end = feat_end + BACKTEST_WINDOW
 
         feat_arr = df_f.iloc[start:feat_end][ALL_COLS_FEATURE].values.astype(np.float32)
-        bt_df = df_m.iloc[feat_end:bt_end][['ts', 'open', 'high', 'low', 'close', 'volume']].copy()
+        bt_df = df_m.iloc[feat_end:bt_end][ALL_COLS_M_QUERY].copy()
         feat_ts = df_f.iloc[start:feat_end]['ts']
 
-        # 停牌缺口检测
         if has_gap(feat_ts.to_frame('ts')) or has_gap(bt_df) or len(bt_df) < 60:
             skipped_gap += 1
             continue
 
-        # Optuna 优化 (5 参数)
         ot = _get_optuna()
         study = ot.create_study(direction="maximize")
-        study.optimize(
-            lambda trial: _objective(trial, bt_df),
-            n_trials=n_trials, show_progress_bar=False
-        )
+        try:
+            study.optimize(
+                lambda trial: _objective(trial, bt_df),
+                n_trials=n_trials, show_progress_bar=False
+            )
+        except Exception:
+            continue
 
-        # Plan B
         trials = study.trials
         sorted_trials = sorted(
             [(t.values[0] if t.values else -999, t) for t in trials if t.values],
@@ -132,14 +153,37 @@ def generate_samples(code: str, td: TdConnector, n_trials: int = 50) -> list[dic
                 'p5': float(params[4]) if len(params) > 4 else 240,
                 'calmar': float(calmar),
                 'sample_weight': float(weight),
-                'feature_start_ts': str(feat_ts.iloc[0]),  # 时间戳，用于时序切分
+                'feature_start_ts': str(feat_ts.iloc[0]),
                 'stock_code': code,
             })
 
-    if skipped_gap:
-        logging.info(f"  {code}: 跳过 {skipped_gap} 个缺口窗口")
-    logging.info(f"  {code}: {len(samples)}条样本")
-    return samples
+        # 间歇刷盘：每 1000 条写一个 chunk 文件
+        if len(samples) >= 1000:
+            _flush_chunk()
+
+    # 处理剩余 + 合并 chunk
+    _flush_chunk()
+
+    # 合并所有 chunk → 最终文件
+    if chunk_files:
+        dfs = []
+        for p in chunk_files:
+            dfs.append(pd.read_parquet(p))
+        df_out = pd.concat(dfs, ignore_index=True)
+    else:
+        df_out = pd.DataFrame()
+
+    if not df_out.empty:
+        df_out.to_parquet(out_path, index=False, engine='pyarrow')
+        # 清理 chunk 文件
+        for p in chunk_files:
+            p.unlink(missing_ok=True)
+    else:
+        pd.DataFrame().to_parquet(out_path, index=False, engine='pyarrow')
+
+    gap_msg = f", 跳过{skipped_gap}个缺口" if skipped_gap else ""
+    logging.info(f"  {code}: {len(df_out)}条样本{gap_msg} → {out_path.name}")
+    return {'code': code, 'samples': len(df_out), 'skipped': False, 'gaps': skipped_gap}
 
 
 def _objective(trial, bt_df):
@@ -153,106 +197,139 @@ def _objective(trial, bt_df):
     result = run_backtest(bt_df, sid, p1, p2, p3, p4, p5)
     trial.set_user_attr("strategy", sid)
     trial.set_user_attr("params", [float(p1), float(p2), float(p3), float(p4), float(p5)])
-    trial.set_user_attr("result", result)
     return result['calmar']
 
 
+def _worker(args: tuple) -> dict:
+    """多进程 Worker: (code, config_dict, n_trials, out_dir) → result"""
+    code, config_dict, n_trials, out_dir = args
+
+    # 子进程独立日志
+    import logging as _log
+    log_cfg = config_dict.get('logger', {})
+    level = getattr(_log, log_cfg.get('level', 'INFO').upper(), _log.INFO)
+    _log.getLogger().handlers.clear()
+    _log.basicConfig(level=level, format='%(asctime)s [%(levelname)s] %(message)s')
+
+    td = TdConnector(config_dict)
+    if not td.connect():
+        return {'code': code, 'samples': 0, 'skipped': False, 'error': 'TDengine 连接失败'}
+
+    try:
+        result = _generate_one_stock(code, td, n_trials, Path(out_dir))
+        return result
+    except Exception as e:
+        _log.error(f"  {code}: Worker 异常: {e}\n{traceback.format_exc()}")
+        return {'code': code, 'samples': 0, 'skipped': False, 'error': str(e)}
+    finally:
+        td.close()
+
+
+def load_stock_list(csv_path: str) -> list[dict]:
+    path = PROJECT_ROOT / csv_path
+    if not path.exists():
+        return []
+    df = pd.read_csv(path, dtype=str)
+    return [{k.strip(): v.strip() if isinstance(v, str) else v for k, v in row.items()}
+            for _, row in df.iterrows()]
+
+
 def main():
-    parser = argparse.ArgumentParser(description='训练样本生成 v2')
+    parser = argparse.ArgumentParser(description='训练样本生成 v3 (多进程)')
     parser.add_argument('--config', default=None)
     parser.add_argument('--stock')
+    parser.add_argument('--workers', type=int, default=1, help='并行进程数 (默认1, 4核4G下安全)')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--trials', type=int, default=50, help='Optuna trials/窗口')
-    parser.add_argument('--train-ratio', type=float, default=0.8)
     args = parser.parse_args()
 
     config = load_config(args.config)
     setup_logging(config, "sample_generator.log")
     disable_system_proxy()
 
-    td = TdConnector(config)
-    if not td.connect():
-        sys.exit(1)
+    out_dir = PROJECT_ROOT / "data" / OUTPUT_DIR_NAME
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        if args.stock:
-            stocks = [{'代码': args.stock, '名称': args.stock}]
-        else:
-            stocks = load_stock_list(config['data'].get('stock_list', 'stock_list.csv'))
-            if not stocks:
-                logging.error("股票列表为空")
-                return
+    if args.stock:
+        stocks = [{'代码': args.stock, '名称': args.stock}]
+    else:
+        stocks = load_stock_list(config['data'].get('stock_list', 'stock_list.csv'))
+        if not stocks:
+            logging.error("股票列表为空")
+            return
 
-        logging.info("=" * 60)
-        logging.info(f"样本生成 v2: {len(stocks)}股, stride={STRIDE}, trials={args.trials}/窗口")
-        logging.info("=" * 60)
+    logging.info("=" * 60)
+    logging.info(f"样本生成 v3: {len(stocks)}只股, stride={STRIDE}, trials={args.trials}, workers={args.workers}")
+    logging.info("=" * 60)
 
+    # 连接 TDengine 估算窗口数
+    td_est = TdConnector(config)
+    if td_est.connect():
         if args.dry_run:
             total_est = 0
             for s in stocks:
                 code = s.get('代码', '')
                 try:
-                    rows = td.query(f"SELECT COUNT(*) FROM f_{code}")
+                    rows = td_est.query(f"SELECT COUNT(*) FROM f_{code}")
                     count = int(rows[0][0]) if rows and rows[0] and rows[0][0] else 0
                     n = max(0, (count - FEATURE_WINDOW - BACKTEST_WINDOW) // STRIDE + 1)
                     total_est += n
                 except:
                     pass
-            logging.info(f"预估: {total_est}窗口 × 4条 = {total_est*4}条样本")
-            logging.info(f"预估耗时: ~{total_est * args.trials * 0.012 / 60:.0f}分钟")
+            td_est.close()
+            logging.info(f"预估: {total_est}窗口 × 4条 = {total_est*4}条")
+            logging.info(f"预估耗时 (2 workers): ~{total_est * args.trials * 0.012 / 2 / 60:.0f}分钟")
             return
+        td_est.close()
 
-        all_samples = []
-        tmp_path = PROJECT_ROOT / "data" / "samples_tmp.parquet"
-        flush_count = 0
-        start_time = time.time()
-        for s in stocks:
-            code = s.get('代码', '')
+    # ── 多进程生成 ──
+    # 将 config 转换为纯 dict (避免序列化问题)
+    config_serializable = {
+        'tdengine': config['tdengine'],
+        'logger': config.get('logger', {'level': 'WARNING'}),
+    }
+
+    start_time = time.time()
+    total_samples = 0
+    success, failed = 0, 0
+
+    if args.stock:
+        # 单股模式 → 主进程直接跑
+        td = TdConnector(config)
+        if td.connect():
             try:
-                batch = generate_samples(code, td, args.trials)
-                all_samples.extend(batch)
-                # 内存保护：超过 50K 条 flush 到临时文件
-                if len(all_samples) >= 50000:
-                    df_tmp = pd.DataFrame(all_samples)
-                    df_tmp.to_parquet(tmp_path, index=False, engine='pyarrow',
-                                      append=(flush_count > 0))
-                    logging.info(f"  flush {flush_count+1}: {len(all_samples)}条 → {tmp_path.name}")
-                    all_samples.clear()
-                    flush_count += 1
-            except Exception as e:
-                logging.error(f"  {code}: 样本生成失败: {e}")
+                r = _generate_one_stock(args.stock, td, args.trials, out_dir)
+                total_samples = r['samples']
+                success = 1 if r['samples'] > 0 else 0
+            finally:
+                td.close()
+    else:
+        # 多进程模式
+        tasks = [(s.get('代码', ''), config_serializable, args.trials, str(out_dir))
+                 for s in stocks if s.get('代码', '')]
 
-        # 合并内存中的剩余 + 临时文件
-        if flush_count > 0 and tmp_path.exists():
-            df_tmp = pd.read_parquet(tmp_path)
-            df_mem = pd.DataFrame(all_samples) if all_samples else pd.DataFrame()
-            df = pd.concat([df_tmp, df_mem], ignore_index=True)
-            tmp_path.unlink()
-        else:
-            df = pd.DataFrame(all_samples) if all_samples else pd.DataFrame()
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+            futures = {executor.submit(_worker, task): task[0] for task in tasks}
 
-        elapsed = time.time() - start_time
-        if df.empty:
-            logging.error("无样本生成")
-            return
+            for i, future in enumerate(as_completed(futures)):
+                code = futures[future]
+                try:
+                    r = future.result()
+                    total_samples += r.get('samples', 0)
+                    if r.get('error'):
+                        logging.error(f"  [{i+1}/{len(stocks)}] {code}: {r['error']}")
+                        failed += 1
+                    else:
+                        success += 1
+                except Exception as e:
+                    logging.error(f"  [{i+1}/{len(stocks)}] {code}: Worker 崩溃: {e}")
+                    failed += 1
 
-        logging.info(f"生成 {len(df)} 条样本, 耗时 {elapsed:.0f}s")
-
-        # 按时间顺序排列，前80%训练，后20%验证（时序铁律）
-        df['_sort_ts'] = pd.to_datetime(df['feature_start_ts'])
-        df = df.sort_values('_sort_ts').drop(columns=['_sort_ts']).reset_index(drop=True)
-        n_train = int(len(df) * args.train_ratio)
-
-        train_path = PROJECT_ROOT / "data" / "train.parquet"
-        val_path   = PROJECT_ROOT / "data" / "val.parquet"
-        df[:n_train].to_parquet(train_path, index=False, engine='pyarrow')
-        df[n_train:].to_parquet(val_path, index=False, engine='pyarrow')
-
-        size_mb = (train_path.stat().st_size + val_path.stat().st_size) / 2**20
-        logging.info(f"train: {n_train}条, val: {len(df)-n_train}条, {size_mb:.1f}MB")
-
-    finally:
-        td.close()
+    elapsed = time.time() - start_time
+    logging.info("=" * 60)
+    logging.info(f"样本生成完成: 成功 {success}, 失败 {failed}, {total_samples}条, 耗时 {elapsed/60:.1f}分钟")
+    logging.info(f"输出目录: {out_dir}")
+    logging.info("=" * 60)
 
 
 if __name__ == '__main__':
