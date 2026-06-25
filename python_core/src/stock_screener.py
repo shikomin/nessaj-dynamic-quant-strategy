@@ -9,8 +9,11 @@ from pathlib import Path
 import pandas as pd
 import akshare as ak
 
-from config import PROJECT_ROOT
-from utils import disable_system_proxy
+# 将项目根目录加入 sys.path, 使 components/ 和 utils/ 模块可被导入
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from components.config import PROJECT_ROOT
+from utils.proxy_utils import disable_system_proxy
 
 
 def fetch_all_stocks() -> pd.DataFrame:

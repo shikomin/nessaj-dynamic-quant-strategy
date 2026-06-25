@@ -3,7 +3,7 @@ import sys
 import logging
 from pathlib import Path
 
-from config import PROJECT_ROOT
+from components.config import PROJECT_ROOT
 
 
 def setup_logging(config: dict, log_name: str = "app.log"):

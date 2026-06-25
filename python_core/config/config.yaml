@@ -1,27 +1,40 @@
+# ──────────── TDengine 连接配置 ────────────
 tdengine:
   host: "124.221.130.19"
   port: 6041
   database: "quant_dynamic"
   username: "root"
-  password: "Nessaj@111"
+  password: "Nessaj@123"
 
+# ──────────── 数据配置 ────────────
 data:
-  stock_list: "stock_list.csv"
-  data_source: "zzshare"      # zzshare | akshare
+  stock_list: "stock_list.csv"        # 股票列表 CSV (相对于 PROJECT_ROOT)
+  data_source: "zzshare"              # zzshare | akshare
 
+# ──────────── 采集策略 ────────────
 fetch:
-  retry_times: 3
-  retry_delay_base: 5
-  history_trading_days: 370
-  days_per_batch: 10
-  end_date: "20260622"          # 数据截止日期，不拉此日期之后的交易日
+  retry_times: 3                      # API 调用失败重试次数
+  retry_delay_base: 5                 # 重试间隔基础秒数 (指数退避: base * attempt)
+  days_per_batch: 10                  # 每批拉取天数 (10天×240条=2400条/批)
+  auto_index: true                    # 股票拉完后自动补全指数数据
+  auto_sentiment: true                # 自动补全情绪数据
 
+# ──────────── zzshare API 配置 ────────────
 zzshare:
   token: "f77a73560e1dd47010952b147f120d2f35cf73612784e94afd4948f7ff3384e8"
-  rate_limit: 60              # 次/分钟
-  freq: "1min"                # 1min | 5min | 15min | 30min | 60min
-  collect_sentiment: true     # 是否采集市场情绪数据
+  rate_limit: 60                      # 次/分钟 (免费 Token 限制)
+  freq: "1min"                        # K线频率: 1min | 5min | 15min | 30min | 60min
 
+# ──────────── 指数数据配置 (v2.2 新增) ────────────
+indices:
+  - code: "sh000001"                  # 上证指数
+    name: "上证指数"
+  - code: "sz399001"                  # 深证成指
+    name: "深证成指"
+  - code: "sz399006"                  # 创业板指
+    name: "创业板指"
+
+# ──────────── 日志配置 ────────────
 logger:
-  level: "INFO"
+  level: "INFO"                       # DEBUG | INFO | WARNING | ERROR
   file: "data/logs/fetcher.log"
