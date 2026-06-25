@@ -1,0 +1,17 @@
+  ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗      ███████╗ ██████╗ █████╗ ██████╗  █████╗
+ ██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝      ██╔════╝██╔════╝██╔══██╗██╔══██╗██╔══██╗
+ ██║   ██║██║   ██║███████║██╔██╗ ██║   ██║         ███████╗██║     ███████║██║  ██║███████║
+ ██║▄▄ ██║██║   ██║██╔══██║██║╚██╗██║   ██║         ╚════██║██║     ██╔══██║██║  ██║██╔══██║
+ ╚██████╔╝╚██████╔╝██║  ██║██║ ╚████║   ██║         ███████║╚██████╗██║  ██║██████╔╝██║  ██║
+  ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝         ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝
+
+  ╔══════════════════════════════════════════════════════════════════════════════════╗
+  ║  ${AnsiColor.BRIGHT_CYAN}QUANT SCADA BACKEND${AnsiColor.DEFAULT}                    ${AnsiColor.BRIGHT_GREEN}Spring Boot ${spring-boot.version}${AnsiColor.DEFAULT}     ║
+  ║  Market Data • Account Mgmt • Simulation Engine • LSTM Inference               ║
+  ║  ${AnsiColor.BRIGHT_MAGENTA}Java ${java.version} · ${application.title} v${application.version}${AnsiColor.DEFAULT}           ║
+  ╚══════════════════════════════════════════════════════════════════════════════════╝
+
+  :: Quant SCADA :: 监控数据 · 模拟交易 · AI 驱动
+
+  ⏱️  System started at ${spring.application.startup-date}
+  🚀  Ready to serve ...
