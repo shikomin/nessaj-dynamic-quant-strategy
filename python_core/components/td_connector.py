@@ -77,7 +77,7 @@ ALL_COLS_FEATURE = [
     'price_position', 'sentiment'
 ]
 
-# 29 维特征列 v2.2 (与 features_1m 超级表列顺序一致)
+# 32 维特征列 v2.3 (与 features_1m 超级表列顺序一致)
 ALL_COLS_FEATURE_V2 = [
     'open', 'high', 'low', 'close',
     'volume', 'volume_ma5', 'volume_ratio',
@@ -88,6 +88,7 @@ ALL_COLS_FEATURE_V2 = [
     'amplitude_pct', 'volume_momentum', 'price_position',
     'sentiment',
     'index_change_pct', 'relative_strength', 'index_volume_ratio',
+    'rank_ma5', 'rank_rsi_14', 'rank_volume',
 ]
 
 

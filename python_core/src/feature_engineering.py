@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-特征工程模块 v2.2 (29维)
+特征工程模块 v2.3 (32维)
 ==========================
 
-从原始 1分钟 K 线 + 指数 1分钟K线 + 市场情绪 → 计算 29维特征。
+从原始 1分钟 K 线 + 指数 1分钟K线 + 市场情绪 → 计算 32 维特征。
 
 ===================================================================
 v2.2 新增: 大盘特征
@@ -69,7 +69,7 @@ from utils.proxy_utils import disable_system_proxy
 from utils.data_utils import load_stock_list
 
 # ============================================================
-# 新版 ALL_COLS_FEATURE (29维, 与 features_1m 超级表列顺序一致)
+# 新版 ALL_COLS_FEATURE (32维, 与 features_1m 超级表列顺序一致)
 # ============================================================
 ALL_COLS_FEATURE_V2 = [
     # 价格基础 (4)
@@ -90,6 +90,8 @@ ALL_COLS_FEATURE_V2 = [
     'sentiment',
     # v2.2 大盘特征 (3)
     'index_change_pct', 'relative_strength', 'index_volume_ratio',
+    # v2.3 截面排名 (3)
+    'rank_ma5', 'rank_rsi_14', 'rank_volume',
 ]
 
 # ============================================================
@@ -210,7 +212,7 @@ def compute_features(
     # ============================================================
     df['date_key'] = df['ts'].dt.strftime('%Y%m%d')
     df['sentiment'] = df['date_key'].map(sentiment_map).fillna(0)
-    df.drop(columns=['date_key'], inplace=True)
+    df = df.drop(columns=['date_key'])
 
     # ============================================================
     # v2.2 新增: 大盘特征 (3维)
@@ -222,7 +224,8 @@ def compute_features(
     # NaN 处理
     # ============================================================
     fill_cols = [c for c in ALL_COLS_FEATURE_V2
-                 if c not in ('ts', 'open', 'high', 'low', 'close', 'volume')]
+                 if c not in ('ts', 'open', 'high', 'low', 'close', 'volume')
+                 and c in df.columns]
     df[fill_cols] = df[fill_cols].ffill().fillna(0)
 
     # 只保留需要的列
@@ -253,13 +256,13 @@ def _merge_index_features(df_stock: pd.DataFrame, df_index: pd.DataFrame) -> pd.
     # ── 计算指数涨跌幅 ──
     idx_close = df_index['close'].astype(float)
     df_index['_idx_pct'] = (idx_close - idx_close.shift(1)) / idx_close.shift(1).replace(0, np.nan) * 100
-    df_index['_idx_pct'].fillna(0, inplace=True)
+    df_index['_idx_pct'] = df_index['_idx_pct'].fillna(0)
 
     # ── 计算指数量比 ──
     idx_vol = df_index['volume'].astype(float)
     idx_vol_ma5 = idx_vol.rolling(5, min_periods=1).mean()
     df_index['_idx_vol_ratio'] = idx_vol / idx_vol_ma5.replace(0, np.nan)
-    df_index['_idx_vol_ratio'].fillna(1, inplace=True)
+    df_index['_idx_vol_ratio'] = df_index['_idx_vol_ratio'].fillna(1)
 
     # ── 时间对齐: 以个股 ts 为准, 取最近的指数行 ──
     df_stock['_ts_temp'] = pd.to_datetime(df_stock['ts'])
@@ -276,15 +279,15 @@ def _merge_index_features(df_stock: pd.DataFrame, df_index: pd.DataFrame) -> pd.
     # ── 计算相对强弱 ──
     stock_pct = (df_merged['close'] - df_merged['close'].shift(1)) / \
                  df_merged['close'].shift(1).replace(0, np.nan) * 100
-    stock_pct.fillna(0, inplace=True)
+    stock_pct = stock_pct.fillna(0)
 
     df_merged['index_change_pct'] = df_merged['_idx_pct'].fillna(0)
     df_merged['relative_strength'] = stock_pct - df_merged['index_change_pct']
     df_merged['index_volume_ratio'] = df_merged['_idx_vol_ratio'].fillna(1)
 
     # 清理临时列
-    df_merged.drop(columns=['_ts_temp', '_idx_pct', '_idx_vol_ratio'],
-                   inplace=True, errors='ignore')
+    df_merged = df_merged.drop(columns=['_ts_temp', '_idx_pct', '_idx_vol_ratio'],
+                               errors='ignore')
     return df_merged
 
 
@@ -367,7 +370,15 @@ def process_stock(stock_code: str, td: TdConnector, sentiment_map: dict) -> int:
 
     # ── 确定增量起始点 ──
     latest = td.get_latest_ts(f"f_{stock_code}")
-    df_stock = td.get_raw_klines(stock_code, start_ts=latest)
+
+    # ── v2.3 增量预热: 多取 200 条K线给滚动/EMA 指标计算 ──
+    # 增量运行时仅加载 ts > latest 的行, MA(60)/RSI(14) 等在前60行边界失真。
+    # 向前多取 200 条 (约800分钟) 作为 warmup, 后续过滤切掉。
+    if latest is not None:
+        warmup_start = latest - pd.Timedelta(minutes=800)
+        df_stock = td.get_raw_klines(stock_code, start_ts=warmup_start)
+    else:
+        df_stock = td.get_raw_klines(stock_code, start_ts=None)
 
     if df_stock.empty:
         logging.info(f"  {stock_code}: 无新原始数据, 跳过")
@@ -376,9 +387,9 @@ def process_stock(stock_code: str, td: TdConnector, sentiment_map: dict) -> int:
     logging.info(f"  {stock_code}: {len(df_stock)} 条原始K线 "
                  f"({df_stock['ts'].min()} ~ {df_stock['ts'].max()})")
 
-    # ── 读取对应的指数K线 ──
+    # ── 读取对应的指数K线 (同样带 warmup) ──
     idx_code = get_index_code(stock_code)
-    df_index = td.get_index_klines(idx_code, start_ts=latest)
+    df_index = td.get_index_klines(idx_code, start_ts=warmup_start if latest else None)
     if df_index.empty:
         logging.warning(f"  {stock_code}: 指数 {idx_code} 无数据, "
                         f"大盘特征将填充为 0")
@@ -406,7 +417,7 @@ def process_stock(stock_code: str, td: TdConnector, sentiment_map: dict) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='特征工程 v2.2 - 29维特征计算 (含大盘)')
+    parser = argparse.ArgumentParser(description='特征工程 v2.3 - 32维特征计算 (含大盘+截面排名)')
     parser.add_argument('--config', default=None, help='配置文件路径')
     parser.add_argument('--stock', help='指定单只股票 (如 sh600036)')
     args = parser.parse_args()
@@ -416,7 +427,7 @@ def main():
     disable_system_proxy()
 
     logging.info("=" * 60)
-    logging.info("特征工程 v2.2 - 29维特征计算 (含指数/大盘)")
+    logging.info("特征工程 v2.3 - 32维特征计算 (含指数/大盘)")
     logging.info("=" * 60)
 
     td = TdConnector(config)
@@ -457,6 +468,65 @@ def main():
         if failed:
             logging.warning(f"失败股票: {', '.join(failed)}")
         logging.info("=" * 60)
+
+        # ══════════════════════════════════════════════════════
+        # v2.3: 截面归一化排名 (仅全量模式, --stock 模式跳过)
+        # ══════════════════════════════════════════════════════
+        if not args.stock:
+            logging.info("─" * 40)
+            logging.info("启动截面归一化排名 (cross-sectional rank)")
+            logging.info("─" * 40)
+            from cross_sectional import _compute_ranks_for_day, _merge_and_rebuild
+
+            temp_dir = PROJECT_ROOT / "data" / "cross_sectional_tmp"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            for old in temp_dir.glob("*.parquet"):
+                old.unlink(missing_ok=True)
+
+            # 获取交易日列表
+            dates = sorted(set(
+                pd.Timestamp(d).strftime('%Y%m%d')
+                for code in stocks
+                for d in (_get_date_range(td, code['代码']) if isinstance(code, dict) else [])
+                # 简化为: 从 sentiment_map 的日期范围
+            ))
+            # 用每天的 sentiment key 作为 trading dates
+            dates = sorted(sentiment_map.keys())
+            if not dates:
+                logging.warning("无交易日数据, 跳过截面归一化")
+            else:
+                t_cs = time.time()
+                days_ok = 0
+                for date in dates:
+                    try:
+                        n = _compute_ranks_for_day(td, stocks, date, temp_dir)
+                        if n > 0:
+                            days_ok += 1
+                    except Exception as e:
+                        logging.error(f"  排名 {date}: {e}")
+                logging.info(f"排名计算: {days_ok}/{len(dates)} 天, "
+                             f"耗时 {(time.time()-t_cs)/60:.1f}分钟")
+
+                t_rebuild = time.time()
+                for i, s in enumerate(stocks):
+                    code = s.get('代码', '')
+                    try:
+                        _merge_and_rebuild(td, code, temp_dir)
+                    except Exception as e:
+                        logging.error(f"  重建 {code}: {e}")
+                    if (i + 1) % 50 == 0:
+                        logging.info(f"  重建: [{i+1}/{len(stocks)}]")
+                logging.info(f"重建: {len(stocks)} 只, "
+                             f"耗时 {(time.time()-t_rebuild)/60:.1f}分钟")
+
+                # 清理
+                for f in temp_dir.glob("*"):
+                    f.unlink(missing_ok=True)
+                try:
+                    temp_dir.rmdir()
+                except OSError:
+                    pass
+                logging.info("截面归一化完成")
 
     finally:
         td.close()

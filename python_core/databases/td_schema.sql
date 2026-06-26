@@ -85,14 +85,14 @@ CREATE STABLE IF NOT EXISTS market_sentiment (
 );
 
 -- ============================================================
--- 5. 个股 1分钟特征 超级表 (v2.2, 29维)
+-- 5. 个股 1分钟特征 超级表 (v2.3, 32维)
 -- ============================================================
 -- 子表命名: f_{code}  如 f_sh600036
 -- 标签: stock_code (内部代码), market (SH/SZ/BJ)
 --
--- 特征维度 (29):
+-- 特征维度 (32):
 --   价格基础(4) + 成交量(3) + 趋势(4) + 动量(5) + 波动(4) +
---   量价(2) + 市场结构(3) + 情绪(1) + 大盘(3)
+--   量价(2) + 市场结构(3) + 情绪(1) + 大盘(3) + 截面排名(3)
 -- ============================================================
 CREATE STABLE IF NOT EXISTS features_1m (
   ts                  TIMESTAMP,
@@ -130,10 +130,14 @@ CREATE STABLE IF NOT EXISTS features_1m (
   price_position      DOUBLE,
   -- 情绪 (1)
   sentiment           DOUBLE,
-  -- v2.2 新增: 大盘特征 (3)
+  -- 大盘特征 (3)
   index_change_pct    DOUBLE,
   relative_strength   DOUBLE,
-  index_volume_ratio  DOUBLE
+  index_volume_ratio  DOUBLE,
+  -- v2.3 新增: 截面排名特征 (3)
+  rank_ma5            DOUBLE,
+  rank_rsi_14         DOUBLE,
+  rank_volume         DOUBLE
 ) TAGS (
   stock_code  VARCHAR(32),
   market      VARCHAR(16)

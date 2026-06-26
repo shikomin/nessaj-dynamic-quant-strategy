@@ -185,9 +185,9 @@ class DataFetcher:
         """
         logging.info(f"获取交易日历: {start_date} ~ {end_date}")
 
-        # 先拉取足够的交易日 (max 370 天覆盖一年)
+        # 先拉取足够的交易日 (max 750 天覆盖两年)
         self._rate_limiter.acquire()
-        result = self._api.trade_days(days=370)
+        result = self._api.trade_days(days=750)
 
         if result is None:
             logging.error("无法获取交易日列表")
@@ -514,7 +514,9 @@ class DataFetcher:
         """
         解析 zzshare 市场情绪 API 的返回结果。
 
-        兼容 list、嵌套 dict、DataFrame 等多种格式。
+        zzshare market_sentiment 返回格式:
+          list[dict]: [{modal_id, date(YYYYMMDD), p_open, p_close, p_high, p_low, p_close_pre1d}]
+        没有 volume/amount 字段, 统一填 0。
         """
         if result is None:
             return pd.DataFrame()
@@ -523,20 +525,26 @@ class DataFetcher:
                 return pd.DataFrame()
             df = pd.DataFrame(result)
         elif isinstance(result, dict):
-            # API 可能将数据包装在多层 dict 中
             inner = result.get('list') or result.get('data') or result.get('records')
             if inner and isinstance(inner, list):
                 df = pd.DataFrame(inner)
             else:
                 return pd.DataFrame()
-        elif hasattr(result, 'empty') and result.empty:
-            return pd.DataFrame()
         else:
             df = result.copy()
 
-        # ── 时间列标准化 ──
-        col_map = {'trade_date': 'ts', 'date': 'ts', 'trade_time': 'ts'}
+        # ── 列名标准化: zzshare 情绪字段 → KLINE_COLS ──
+        col_map = {
+            'date': 'ts', 'trade_date': 'ts', 'trade_time': 'ts',
+            'p_open': 'open', 'p_high': 'high', 'p_low': 'low', 'p_close': 'close',
+        }
         df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+
+        # 补全缺失的列
+        for missing in ['volume', 'amount']:
+            if missing not in df.columns:
+                df[missing] = 0
+
         if 'ts' in df.columns:
             df['ts'] = pd.to_datetime(df['ts'], errors='coerce')
         return df
