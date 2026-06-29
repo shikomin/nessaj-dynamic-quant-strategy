@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.nessaj.quant.scada.auth.mapper.UserWatchlistMapper">
+    <insert id="insert" parameterType="com.nessaj.quant.scada.auth.entity.UserWatchlist" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO user_watchlist (user_id, stock_code, sort_order, created_at)
+        VALUES (#{userId}, #{stockCode}, #{sortOrder}, #{createdAt})
+    </insert>
+
+    <delete id="deleteById">
+        DELETE FROM user_watchlist WHERE id = #{id} AND user_id = #{userId}
+    </delete>
+
+    <select id="findByUserAndCode" resultType="com.nessaj.quant.scada.auth.entity.UserWatchlist">
+        SELECT id, user_id, stock_code, sort_order, created_at
+        FROM user_watchlist
+        WHERE user_id = #{userId} AND stock_code = #{stockCode}
+    </select>
+
+    <select id="findPageByUser" resultType="com.nessaj.quant.scada.auth.dto.WatchlistItemVO">
+        SELECT w.id, w.user_id, w.stock_code, s.name AS stock_name,
+               s.market, s.sub_market, s.sector, w.sort_order, w.created_at
+        FROM user_watchlist w
+        LEFT JOIN stock_base_info s ON w.stock_code = s.code
+        WHERE w.user_id = #{userId}
+        <if test="keyword != null and keyword != ''">
+            AND (w.stock_code LIKE CONCAT('%', #{keyword}, '%') OR s.name LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        ORDER BY w.sort_order ASC, w.id ASC
+        LIMIT #{offset}, #{size}
+    </select>
+
+    <select id="countByUser" resultType="int">
+        SELECT COUNT(*)
+        FROM user_watchlist w
+        LEFT JOIN stock_base_info s ON w.stock_code = s.code
+        WHERE w.user_id = #{userId}
+        <if test="keyword != null and keyword != ''">
+            AND (w.stock_code LIKE CONCAT('%', #{keyword}, '%') OR s.name LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+    </select>
+
+    <update id="updateSortOrder">
+        UPDATE user_watchlist SET sort_order = #{sortOrder} WHERE id = #{id}
+    </update>
+
+    <select id="maxSortOrder" resultType="int">
+        SELECT COALESCE(MAX(sort_order), 0) FROM user_watchlist WHERE user_id = #{userId}
+    </select>
+</mapper>

@@ -1,0 +1,124 @@
+这是一个股票实时数据监控和实盘模拟的系统quant-scada，现在我只初始化了java后端项目。
+项目结构：
+1.quant-scada-backend后端：jdk17、springboot
+后端依赖都在pom中，有些之后可能会用上的我先注释掉了，你不用管。
+后端初始已经建好的表：
+-- 用户表
+create table user
+(
+    id         bigint auto_increment
+        primary key,
+    created_at datetime default CURRENT_TIMESTAMP null,
+    email      varchar(100)                       null,
+    nickname   varchar(50)                        null,
+    password   varchar(255)                       not null,
+    phone      varchar(20)                        null,
+    updated_at datetime(6)                        null,
+    username   varchar(50)                        not null,
+    constraint UK_sb8bbouer5wak8vyiiy4pf2bx
+        unique (username)
+);
+
+-- 股票数据表
+create table stock_base_info
+(
+    id          bigint auto_increment
+        primary key,
+    code        varchar(16)                        not null,
+    create_time datetime default CURRENT_TIMESTAMP null,
+    market      varchar(8)                         not null,
+    name        varchar(64)                        not null,
+    sub_market  varchar(8)                         null comment '子市场（如SZ、SH）',
+    sector      varchar(32)                        null comment '所属板块（如创业板、主板）',
+    constraint UKi4a6aipeb0ky8a0nx16dqool2
+        unique (market, code)
+);
+示例：
+1,bj920000,2026-06-15 11:50:55,A,安徽凤凰,BJ,其他
+5528,00001,2026-06-15 11:50:56,HK,长和,HK,港股
+
+spring:
+  datasource:
+    dynamic:
+      primary: mysql
+      druid:
+        initial-size: 5
+        max-active: 20
+        min-idle: 5
+        max-wait: 5000
+      datasource:
+        mysql:
+          driver-class-name: com.mysql.cj.jdbc.Driver
+          url: jdbc:mysql://124.221.130.19:3306/quant_scada?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true
+          username: root
+          password: Password@111
+        tdengine:
+          driver-class-name: com.taosdata.jdbc.ws.WebSocketDriver
+          url: jdbc:TAOS-WS://124.221.130.19:6041
+          username: root
+          password: Nessaj@111
+          druid:
+            initial-size: 2
+            max-active: 5
+            min-idle: 2
+            max-wait: 5000
+            validation-query: SELECT SERVER_VERSION()
+
+
+2.quant-scada-backend前端：vue3、vite、typescript、electron
+前端依赖大致这些：
+  "dependencies": {
+    "axios": "^1.6.7",
+    "mqtt": "^5.15.1",
+    "pinia": "^2.1.7",
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "concurrently": "^8.2.2",
+    "electron": "^29.1.4",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.4.2",
+    "vite": "^5.1.6",
+    "vue-tsc": "^2.0.6",
+    "wait-on": "^7.2.0"
+  },
+
+
+3.quant-scada-py数据采集后端:python 3.13.12
+zzshare采集实时数据，flask接口，可查询数据采集状态。
+采集数据录入时序数据库tdengine。
+时序数据库:
+# quant-scada-rt:实时数据数据库(数据失效时间3天)
+### 5秒从zzshare获取一次实时数据，写入实时数据库。
+## 指数数据实时表:index_rt_data
+## 股票数据实时表:stock_rt_data
+# quant-scada-hist:历史数据数据库(数据失效时间0天)
+### 交易日当天收盘后，把实时数据刷入历史数据库，只保留1min的high,open,low,close,volume,amount数据。
+## 指数数据实时表:index_hist_kline_1m
+## 股票数据实时表:stock_hist_kline_1m
+## 历史市场情绪数据：market_hist_sentiment
+
+
+
+远程环境:124.221.130.19
+tdengine数据库：docker镜像版本：tdengine/tsdb:3.3.8.0
+mysql数据库：docker镜像版本：mysql:5.7.39
+
+==========================================
+# 第一阶段开发：
+先生成前后端登录注册逻辑，把前端web端和electron桌面端跑通。
+token用jwt生成，前端存storage中。
+后端统一拦截鉴权。
+前端统一拦截请求，token塞header中，路由跳转判断是否有token。
+导航栏菜单有：看板、自选股、行情。右上角是用户头像和用户名，点击弹出选项，个人中心，消息中心，退出系统(退出系统回到登录页)。
+看板为主页，登录进去跳转看板。
+
+electron桌面端，去掉系统窗口UI的边框、最小化、最大化和关闭。在导航栏上方加一行窗口头，自己写最大化和关闭，鼠标按住可拖动窗口。
+前端根据启动方式，决定是否隐藏上方桌面端的窗口头，web端隐藏，桌面端显示。
+
+页面样式用github soft-dark样式主题。公共的UI样式css抽出来放一起，之后复用。
+
+
+注：不用编译，我会自己编译验证。

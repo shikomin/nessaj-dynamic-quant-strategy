@@ -12,4 +12,4 @@ server:
 
 jwt:
   secret: NESSAJ-QuantScada-JwtSecretKey-2026-06-25-MustBeLongEnough
-  expiration: 86400000
+  expiration: 432000000
