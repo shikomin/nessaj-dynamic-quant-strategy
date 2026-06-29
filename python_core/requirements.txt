@@ -5,3 +5,4 @@ pyyaml>=6.0
 akshare>=1.15
 optuna>=3.0
 pyarrow>=10.0
+pytdx>=1.72
