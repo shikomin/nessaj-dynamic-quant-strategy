@@ -16,6 +16,11 @@ export default defineConfig({
         target: 'http://localhost:25792',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy-api/, '')
+      },
+      '/py-api': {
+        target: 'http://localhost:5000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/py-api/, '')
       }
     }
   }

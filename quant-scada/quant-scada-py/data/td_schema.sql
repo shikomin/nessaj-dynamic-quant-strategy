@@ -93,7 +93,7 @@ CREATE STABLE IF NOT EXISTS quant_scada_rt.intraday_sentiment (
 -- ============================================================
 CREATE DATABASE IF NOT EXISTS quant_scada_hist
   PRECISION 'ms'
-  KEEP 36500
+  KEEP 150
   DURATION 5
   BUFFER 256
   PAGES 256

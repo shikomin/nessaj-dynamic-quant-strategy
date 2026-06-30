@@ -5,7 +5,7 @@ class Config:
     ZZSHARE_BASE_URL = os.getenv("ZZSHARE_BASE_URL", "https://api.zizizaizai.com")
     ZZSHARE_TOKEN = os.getenv("ZZSHARE_TOKEN", "anonymous")
 
-    TD_DSN = os.getenv("TD_DSN", "taosws://root:Nessaj@111@124.221.130.19:6041")
+    TD_DSN = os.getenv("TD_DSN", "taosws://root:Nessaj%40123@124.221.130.19:6041")
 
     FLASK_HOST = os.getenv("FLASK_HOST", "0.0.0.0")
     FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))

@@ -1,6 +1,7 @@
 <template>
   <div class="title-bar" @dblclick="handleMaximize">
     <div class="title-bar-drag">
+      <img class="title-logo" src="/stock-up.png" alt="" />
       <span class="title-bar-text">Quant Scada</span>
     </div>
     <div class="title-bar-actions">
@@ -46,6 +47,14 @@ function handleClose() {
 
 .title-bar-drag {
   padding-left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.title-logo {
+  width: 16px;
+  height: 16px;
 }
 
 .title-bar-text {

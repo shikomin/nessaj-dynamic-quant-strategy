@@ -1,7 +1,6 @@
 import taosws
 import logging
 from datetime import datetime
-from urllib.parse import quote_plus
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config.settings import Config
 
@@ -19,16 +18,7 @@ class TDWriter:
         self.hist_db = Config.HIST_DATABASE
 
     def _build_dsn(self):
-        dsn = self._raw_dsn
-        if dsn.startswith("taosws://"):
-            rest = dsn[len("taosws://"):]
-            if "@" in rest:
-                userinfo, hostport = rest.split("@", 1)
-                if ":" in userinfo:
-                    user, pwd = userinfo.split(":", 1)
-                    return f"taosws://{quote_plus(user)}:{quote_plus(pwd)}@{hostport}"
-                return f"taosws://{quote_plus(userinfo)}@{hostport}"
-        return dsn
+        return self._raw_dsn
 
     def _new_conn(self):
         return taosws.connect(self._build_dsn())
