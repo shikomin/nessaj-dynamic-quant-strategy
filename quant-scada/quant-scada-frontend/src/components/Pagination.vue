@@ -114,7 +114,7 @@ const visiblePages = computed(() => {
 .page-btn.active {
   background-color: var(--accent-info);
   border-color: var(--accent-info);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 .page-btn:disabled {

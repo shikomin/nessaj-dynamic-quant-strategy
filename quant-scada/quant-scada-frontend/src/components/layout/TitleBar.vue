@@ -87,6 +87,6 @@ function handleClose() {
 
 .title-btn-close:hover {
   background-color: var(--accent-danger);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 </style>

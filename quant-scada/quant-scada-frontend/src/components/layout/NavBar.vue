@@ -13,6 +13,7 @@
       </router-link>
     </div>
     <div class="nav-right">
+      <ThemeToggle />
       <UserMenu />
     </div>
   </nav>
@@ -20,6 +21,7 @@
 
 <script setup lang="ts">
 import { useRoute } from 'vue-router'
+import ThemeToggle from '@/components/ThemeToggle.vue'
 import UserMenu from './UserMenu.vue'
 
 const route = useRoute()

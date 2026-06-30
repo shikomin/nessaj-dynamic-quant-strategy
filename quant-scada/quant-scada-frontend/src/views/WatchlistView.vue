@@ -267,7 +267,7 @@ onMounted(fetchList)
 .btn-sort:hover, .btn-sort.active {
   background-color: var(--accent-info);
   border-color: var(--accent-info);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 .btn-add {
@@ -360,12 +360,12 @@ onMounted(fetchList)
 
 .item-tag.sub {
   color: var(--accent-info);
-  background-color: rgba(88, 166, 255, 0.1);
+  background-color: var(--accent-info-subtle);
 }
 
 .item-tag.sector {
   color: var(--accent-success);
-  background-color: rgba(63, 185, 80, 0.1);
+  background-color: var(--accent-success-subtle);
 }
 
 .col-time {

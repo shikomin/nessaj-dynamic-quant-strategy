@@ -66,7 +66,7 @@ defineEmits<{
   padding: 6px 16px;
   font-size: 13px;
   background-color: var(--btn-danger-bg);
-  color: #fff;
+  color: var(--text-on-accent);
   border-radius: var(--radius);
   cursor: pointer;
 }

@@ -89,7 +89,7 @@ onMounted(async () => {
   height: 64px;
   border-radius: 50%;
   background-color: var(--accent-info);
-  color: #fff;
+  color: var(--text-on-accent);
   display: flex;
   align-items: center;
   justify-content: center;

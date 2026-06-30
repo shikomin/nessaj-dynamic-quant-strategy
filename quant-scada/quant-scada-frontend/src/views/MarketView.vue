@@ -10,11 +10,11 @@
         <div class="ruler-track">
           <div class="ruler-line" />
           <div
-            v-for="(p, i) in store.PERIODS"
+            v-for="(p, i) in PERIODS"
             :key="p.value"
             class="ruler-mark"
-            :class="{ active: store.period === p.value, disabled: !store.isPeriodAvailable(p.value) }"
-            @click="store.changePeriod(p.value)"
+            :class="{ active: period === p.value, disabled: !isPeriodAvailable(p.value) }"
+            @click="changePeriod(p.value)"
           >
             <div class="ruler-dot" />
             <span class="ruler-label">{{ p.label }}</span>
@@ -23,14 +23,14 @@
       </div>
 
       <div class="date-picker-wrap" v-if="activeTab === 'hist' && store.selectedCode">
-        <span class="current-date" @click="showDatePicker = !showDatePicker">{{ store.currentDate || '--' }}</span>
+        <span class="current-date" @click="showDatePicker = !showDatePicker">{{ currentDate || '--' }}</span>
         <div class="date-dropdown" v-if="showDatePicker">
           <div class="date-grid">
             <div
               v-for="d in dateGrid"
               :key="d.date"
               class="date-cell"
-              :class="{ available: d.available, selected: d.date === store.currentDate, today: d.isToday }"
+              :class="{ available: d.available, selected: d.date === currentDate, today: d.isToday }"
               @click="onDatePick(d)"
             >
               <span class="date-num">{{ d.day }}</span>
@@ -44,11 +44,11 @@
     <div class="page-body" v-if="activeTab === 'hist'">
       <div class="chart-area">
         <KLineChart
-          :candles="store.candles"
+          :candles="candles"
           :cover-visible="!hasData"
-          :loading="store.loading"
-          :date="store.currentDate"
-          :period="store.PERIODS[0].value"
+          :loading="loading"
+          :date="currentDate"
+          :period="PERIODS[0].value"
           @crosshair="onCrosshair"
         />
       </div>
@@ -111,41 +111,62 @@
 // 布局: [页签] [周期标尺] [日期选择器] 同行
 //       [左侧: Canvas K线] [右侧: 搜索/信息/行情/光标面板]
 //
+// 状态归属:
+//   全局 store: selectedCode, selectedName, selectedMarket (跨页面共享)
+//   本地 ref:   candles, loading, error, period, currentDate, availableDates
+//
 // 数据流:
 //   selectStock → loadDates() → 选最新日期 → loadKline(start,end)
 //   changePeriod → loadKline (视口不重置, 引擎用现有视口渲染新蜡烛)
-//   changeDate   → loadKline + 引擎 resetDay + resetViewport
+//   changeDate   → loadKline + 引擎通过 watcher 自动 resetDay + resetViewport
 // ============================================================
 
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useMarketStore } from '@/stores/market'
+import { PERIODS } from '@/stores/market'
 import { marketLabel } from '@/utils/market'
+import { fetchKlineApi, fetchKlineDatesApi } from '@/api/market'
 import { searchStocksApi } from '@/api/watchlist'
 import KLineChart from '@/components/KLineChart.vue'
-import type { StockSearchItem } from '@/api/watchlist'
 import type { KlineCandle } from '@/api/market'
+import type { StockSearchItem } from '@/api/watchlist'
 
-// ---- 状态 ----
+// ---- 全局 store (仅选中股票信息) ----
 const store = useMarketStore()
-const activeTab = ref('hist')                            // 'hist' | 'rt'
-const keyword = ref('')                                  // 股票搜索输入
-const results = ref<StockSearchItem[]>([])               // 搜索结果列表
-const showDropdown = ref(false)                          // 搜索结果下拉
-const showDatePicker = ref(false)                        // 日期选择器下拉
+
+// ---- 本地页面状态 ----
+const activeTab = ref<'hist' | 'rt'>('hist')
+const keyword = ref('')
+const results = ref<StockSearchItem[]>([])
+const showDropdown = ref(false)
+const showDatePicker = ref(false)
 const searching = ref(false)
 const searchInput = ref<HTMLInputElement | null>(null)
 const crossData = ref<{ ts: number; price: number; candle: KlineCandle | null } | null>(null)
 
-let timer: ReturnType<typeof setTimeout> | null = null   // 搜索防抖定时器
+/** 当前查询周期 */
+const period = ref('1m')
+/** 当前查询日期 */
+const currentDate = ref('')
+/** 可选日期列表 */
+const availableDates = ref<string[]>([])
+/** 当前 K 线数据 */
+const candles = ref<KlineCandle[]>([])
+/** 加载状态 */
+const loading = ref(false)
+/** 错误信息 */
+const error = ref('')
+
+let timer: ReturnType<typeof setTimeout> | null = null
 
 // ---- 计算属性 ----
 
 /** 有数据且非加载中 → 显示 chart; 否则显示 cover mask */
-const hasData = computed(() => store.candles.length > 0 && !store.loading)
+const hasData = computed(() => candles.value.length > 0 && !loading.value)
 
 /** 当日行情: 从当前 candles 中提取 OHLC + 总成交量 */
 const todayOCHL = computed(() => {
-  const cs = store.candles
+  const cs = candles.value
   if (cs.length === 0) return null
   let high = -Infinity, low = Infinity, vol = 0
   for (const c of cs) { if (c.high > high) high = c.high; if (c.low < low) low = c.low; vol += c.volume }
@@ -160,7 +181,7 @@ const dateGrid = computed(() => {
   const year = now.getFullYear()
   const month = now.getMonth()
   const daysInMonth = new Date(year, month + 1, 0).getDate()
-  const dateSet = new Set(store.availableDates)
+  const dateSet = new Set(availableDates.value)
 
   const grid: { date: string; day: number; week: string; available: boolean; isToday: boolean }[] = []
   for (let d = 1; d <= daysInMonth; d++) {
@@ -168,8 +189,8 @@ const dateGrid = computed(() => {
     const ds = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
     grid.push({
       date: ds, day: d, week: WEEKDAYS[dt.getDay()],
-      available: dateSet.has(ds),                          // 有数据 → 绿色可点
-      isToday: d === now.getDate()                         // 今天 → 蓝色边框
+      available: dateSet.has(ds),
+      isToday: d === now.getDate()
     })
   }
   return grid
@@ -187,6 +208,85 @@ function fmtTs(ts: number) {
   return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`
 }
 
+// ---- 周期可用性 ----
+
+/** 判断指定周期是否有足够数据 (至少 10 根蜡烛) */
+function isPeriodAvailable(p: string): boolean {
+  if (!store.selectedCode) return p === '1m'
+  const ms = candles.value.length >= 2
+    ? new Date(candles.value[candles.value.length - 1].ts).getTime() -
+      new Date(candles.value[0].ts).getTime()
+    : 0
+  if (ms <= 0) return p === '1m'
+  const periodMs = parseInt(p) * (p.endsWith('s') ? 1000 : 60_000)
+  return ms >= periodMs * 10
+}
+
+// ---- 数据加载 ----
+
+/** 加载可选日期列表 */
+async function loadDates() {
+  if (!store.selectedCode) return
+  try {
+    const res: any = await fetchKlineDatesApi(store.selectedCode)
+    if (res.code === 200) availableDates.value = res.data || []
+  } catch { availableDates.value = [] }
+}
+
+/** 加载 K 线数据 */
+async function loadKline() {
+  if (!store.selectedCode) return
+  loading.value = true
+  error.value = ''
+  try {
+    const start = currentDate.value ? `${currentDate.value} 00:00:00` : undefined
+    const end = currentDate.value ? `${currentDate.value} 23:59:59` : undefined
+    const res: any = await fetchKlineApi(store.selectedCode, period.value, start, end)
+    if (res.code === 200) {
+      candles.value = res.data
+    } else {
+      candles.value = []
+      error.value = res.msg || '加载失败'
+    }
+  } catch (e: any) {
+    candles.value = []
+    error.value = e.message || '网络错误'
+  } finally {
+    loading.value = false
+  }
+}
+
+// ---- 交互 ----
+
+/** 选中搜索结果 → 加载该股票的日期列表 + K线 */
+async function selectStock(item: StockSearchItem) {
+  store.selectedCode = item.code
+  store.selectedName = item.name
+  store.selectedMarket = item.subMarket || ''
+  period.value = '1m'
+  currentDate.value = ''
+  keyword.value = ''; results.value = []; showDropdown.value = false; showDatePicker.value = false
+  await loadDates()
+  if (availableDates.value.length > 0) {
+    currentDate.value = availableDates.value[0]
+  }
+  await loadKline()
+}
+
+/** 切换采样周期 */
+async function changePeriod(p: string) {
+  if (p === period.value || !isPeriodAvailable(p)) return
+  period.value = p
+  await loadKline()
+}
+
+/** 切换查询日期 */
+async function changeDate(date: string) {
+  if (date === currentDate.value) return
+  currentDate.value = date
+  await loadKline()
+}
+
 // ---- 搜索 ----
 
 /** 300ms 防抖搜索股票库 */
@@ -200,11 +300,8 @@ function onSearch() {
   }, 300)
 }
 
-/** 选中搜索结果 → 加载该股票的日期列表 + K线 */
-function select(item: StockSearchItem) {
-  store.selectStock(item.code, item.name, item.subMarket || '')
-  keyword.value = ''; results.value = []; showDropdown.value = false; showDatePicker.value = false
-}
+/** 从搜索结果中选择 (兼容 StockSearchItem) */
+function select(item: StockSearchItem) { selectStock(item) }
 
 // ---- 日期选择 ----
 
@@ -212,7 +309,7 @@ function select(item: StockSearchItem) {
 async function onDatePick(d: { available: boolean; date: string }) {
   if (!d.available) return
   showDatePicker.value = false
-  await store.changeDate(d.date)
+  await changeDate(d.date)
 }
 
 // ---- 交互 ----
@@ -227,8 +324,25 @@ function handleClickOutside(e: MouseEvent) {
 /** 接收 KLineChart emit 的十字光标数据 */
 function onCrosshair(d: { ts: number; price: number; candle: KlineCandle | null }) { crossData.value = d }
 
-onMounted(() => document.addEventListener('click', handleClickOutside))
-onUnmounted(() => document.removeEventListener('click', handleClickOutside))
+/**
+ * 挂载时恢复: 如果 store 中已有选中股票, 自动重新加载数据。
+ * 确保页面切换后 K 线图数据不丢失。
+ */
+onMounted(async () => {
+  document.addEventListener('click', handleClickOutside)
+  if (store.selectedCode) {
+    period.value = '1m'
+    await loadDates()
+    if (availableDates.value.length > 0) {
+      currentDate.value = availableDates.value[0]
+    }
+    await loadKline()
+  }
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+})
 </script>
 
 <style scoped>
@@ -245,21 +359,21 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 .ruler-line { position: absolute; left: 12px; right: 12px; top: 8px; height: 1px; background: var(--border-primary); z-index: 0; pointer-events: none; }
 .ruler-mark { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 0 14px; cursor: pointer; }
 .ruler-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border-primary); transition: all 0.2s; }
-.ruler-mark.active .ruler-dot { width: 14px; height: 14px; background: var(--accent-info); box-shadow: 0 0 8px rgba(88,166,255,0.5); }
+.ruler-mark.active .ruler-dot { width: 14px; height: 14px; background: var(--accent-info); box-shadow: var(--accent-info-glow); }
 .ruler-mark.disabled { opacity: 0.3; cursor: not-allowed; pointer-events: none; }
 .ruler-label { font-size: 10px; color: var(--text-muted); }
 .ruler-mark.active .ruler-label { color: var(--accent-info); font-weight: 600; }
 
 .date-picker-wrap { position: relative; margin-left: auto; }
-.current-date { font-size: 12px; color: var(--accent-info); cursor: pointer; padding: 4px 10px; border-radius: var(--radius); background: rgba(88,166,255,0.1); }
-.current-date:hover { background: rgba(88,166,255,0.2); }
-.date-dropdown { position: absolute; top: calc(100% + 6px); right: 0; z-index: 60; background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: var(--radius); padding: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+.current-date { font-size: 12px; color: var(--accent-info); cursor: pointer; padding: 4px 10px; border-radius: var(--radius); background: var(--accent-info-subtle); }
+.current-date:hover { background: var(--accent-info-muted); }
+.date-dropdown { position: absolute; top: calc(100% + 6px); right: 0; z-index: 60; background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: var(--radius); padding: 8px; box-shadow: var(--shadow-dropdown-heavy); }
 .date-grid { display: grid; grid-template-columns: repeat(7, 48px); gap: 2px; }
 .date-cell { display: flex; flex-direction: column; align-items: center; padding: 6px 4px; border-radius: var(--radius); cursor: default; }
 .date-cell.available { cursor: pointer; color: var(--accent-success); }
-.date-cell.available:hover { background: rgba(63,185,80,0.1); }
-.date-cell.selected { background: var(--accent-info); color: #fff; }
-.date-cell.selected.available { background: var(--accent-info); color: #fff; }
+.date-cell.available:hover { background: var(--accent-success-subtle); }
+.date-cell.selected { background: var(--accent-info); color: var(--text-on-accent); }
+.date-cell.selected.available { background: var(--accent-info); color: var(--text-on-accent); }
 .date-cell:not(.available) { color: var(--text-muted); opacity: 0.4; }
 .date-num { font-size: 14px; font-weight: 600; }
 .date-week { font-size: 10px; }
@@ -281,7 +395,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 .stock-picker input { width: 100%; padding: 6px 10px; font-size: 12px; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: var(--radius); color: var(--text-primary); outline: none; }
 .stock-picker input:focus { border-color: var(--input-focus-border); }
 .stock-picker input::placeholder { color: var(--text-muted); }
-.dropdown { position: absolute; top: calc(100% + 4px); left: 0; right: 0; max-height: 260px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 50; }
+.dropdown { position: absolute; top: calc(100% + 4px); left: 0; right: 0; max-height: 260px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: var(--radius); box-shadow: var(--shadow-dropdown); z-index: 50; }
 .dropdown-item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; }
 .dropdown-item:hover { background: var(--bg-overlay); }
 .dropdown-item.muted { color: var(--text-muted); cursor: default; }

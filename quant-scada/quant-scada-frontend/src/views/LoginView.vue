@@ -108,7 +108,7 @@ async function handleLogin() {
   font-size: 13px;
   text-align: center;
   margin-bottom: 32px;
-  color: var(--color-text-secondary);
+  color: var(--text-secondary);
 }
 
 .auth-form {

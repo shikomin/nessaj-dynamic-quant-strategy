@@ -1,0 +1,138 @@
+/* ============================================================
+   共享 CSS 组件类
+   ============================================================
+   提取跨页面/跨组件复用的样式模式, 避免重复定义。
+   使用方式: 在 scoped 样式外直接使用全局类名。
+   如需覆盖, 在组件 scoped 样式中重新声明对应属性即可。
+   ============================================================ */
+
+/* ---- 页面容器 ---- */
+.page {
+  padding: 24px;
+}
+
+/* ---- 页面标题 ---- */
+.page-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.page-desc {
+  margin-top: 8px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+/* ---- 搜索输入框 ---- */
+.search-input {
+  width: 200px;
+  padding: 6px 10px;
+  font-size: 13px;
+  background-color: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  outline: none;
+}
+.search-input:focus {
+  border-color: var(--input-focus-border);
+}
+.search-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* ---- 主要按钮 ---- */
+.btn-primary {
+  padding: 8px 16px;
+  background-color: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+.btn-primary:hover {
+  background-color: var(--btn-primary-hover);
+}
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ---- 标签 (sub / sector) ---- */
+.item-tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.item-tag.sub {
+  color: var(--accent-info);
+  background-color: var(--accent-info-subtle);
+}
+.item-tag.sector {
+  color: var(--accent-success);
+  background-color: var(--accent-success-subtle);
+}
+
+/* ---- 信息网格 ---- */
+.info-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.info-row .label {
+  color: var(--text-muted);
+}
+
+/* ---- 面板区块 ---- */
+.panel-section {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+/* ---- 删除按钮 ---- */
+.btn-delete {
+  padding: 3px 10px;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-delete:hover {
+  color: var(--accent-danger);
+  border-color: var(--accent-danger);
+}
+
+/* ---- 淡入过渡 ---- */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.15s;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}

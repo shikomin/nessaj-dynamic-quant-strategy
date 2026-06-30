@@ -1,3 +1,9 @@
+/**
+ * Axios HTTP 客户端
+ * - 自动附加 JWT Token
+ * - 401/403 时清除登录态并跳转登录页
+ * - 响应拦截器自动解包 res.data
+ */
 import axios from 'axios'
 
 const http = axios.create({
@@ -23,7 +29,6 @@ http.interceptors.response.use(
         window.location.href = '/#/login'
       }, 50)
     }
-    return Promise.reject(err)
     return Promise.reject(err)
   }
 )

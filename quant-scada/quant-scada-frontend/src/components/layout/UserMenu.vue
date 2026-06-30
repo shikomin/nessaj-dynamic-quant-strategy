@@ -89,7 +89,7 @@ onUnmounted(() => {
   height: 28px;
   border-radius: 50%;
   background-color: var(--accent-info);
-  color: #fff;
+  color: var(--text-on-accent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -123,7 +123,7 @@ onUnmounted(() => {
   background-color: var(--bg-secondary);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-dropdown);
   z-index: 100;
   padding: 4px;
 }

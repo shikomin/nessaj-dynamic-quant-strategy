@@ -2,15 +2,16 @@
 // K 线 Canvas 渲染引擎
 // ============================================================
 // 坐标系:
-//   tsToX:  时间戳(ms) → 画布像素 x
+//   tsToX:  时间戳(ms) → 画布像素 x (支持视口外外推)
 //   xToTs:  像素 x → 时间戳(ms) [十字光标反向定位]
 //   yFromPrice: 价格 → 画布像素 y
 //
-// 分段模式(segments 非空时):
+// 分段模式 (segments 非空时):
 //   交易时段之间 gap 不占像素宽度, 直接拼接。
 //   例如 A 股: 9:30-11:30 → (gap 塌陷) → 13:00-15:00
+//   超出视口的蜡烛会线性外推到画布之外, 不会堆叠在边界。
 //
-// 绘制层级(从底到顶):
+// 绘制层级 (从底到顶):
 //   1. 网格 + 边框
 //   2. 成交量柱
 //   3. 蜡烛图
@@ -39,21 +40,54 @@ export interface CrosshairData {
 }
 
 // ---- 配色 ----
-// 中国股市习惯: 涨红跌绿, 深色背景
+// 中国股市习惯: 涨红跌绿
 
-const COLORS = {
+/** K 线图表配色方案接口 */
+export interface ChartColors {
+  bg: string
+  grid: string
+  text: string
+  textBright: string
+  textWhite: string
+  up: string
+  down: string
+  crosshair: string
+  crosshairLabel: string
+  volUp: string
+  volDown: string
+  axisLine: string
+}
+
+/** 深色主题 (默认) */
+export const DARK_CHART_COLORS: ChartColors = {
   bg: "#0d1117",
   grid: "rgba(255,255,255,0.04)",
   text: "#8b949e",
   textBright: "#c9d1d9",
   textWhite: "#ffffff",
-  up: "#ef5350",          // 涨红
-  down: "#26a69a",        // 跌绿
+  up: "#ef5350",
+  down: "#26a69a",
   crosshair: "rgba(255,255,255,0.28)",
   crosshairLabel: "rgba(22,27,33,0.94)",
   volUp: "rgba(239,83,80,0.3)",
   volDown: "rgba(38,166,154,0.3)",
   axisLine: "#30363d",
+}
+
+/** 亮色主题 */
+export const LIGHT_CHART_COLORS: ChartColors = {
+  bg: "#ffffff",
+  grid: "rgba(0,0,0,0.04)",
+  text: "#656d76",
+  textBright: "#1f2328",
+  textWhite: "#ffffff",
+  up: "#cf222e",
+  down: "#1a7f37",
+  crosshair: "rgba(0,0,0,0.15)",
+  crosshairLabel: "rgba(234,238,242,0.94)",
+  volUp: "rgba(207,34,46,0.2)",
+  volDown: "rgba(26,127,55,0.2)",
+  axisLine: "#d0d7de",
 }
 
 // ---- 布局常量 ----
@@ -101,9 +135,20 @@ export class KlineEngine {
   // 最小视口范围 = periodMs × 16, 由外部 setMinPeriod() 设置
   private periodMs = 60_000
 
+  // ---- 配色 (可动态切换) ----
+  private colors: ChartColors = DARK_CHART_COLORS
+
   // ==========================================================
   // 公开 API
   // ==========================================================
+
+  /**
+   * 动态切换图表配色方案 (用于主题切换)。
+   * @param c 配色方案对象, 可用 DARK_CHART_COLORS / LIGHT_CHART_COLORS
+   */
+  setColors(c: ChartColors) {
+    this.colors = c
+  }
 
   /**
    * 设置缩放下限所使用的"最小采样周期"
@@ -173,7 +218,7 @@ export class KlineEngine {
 
     const ctx = this.ctx
     ctx.clearRect(0, 0, this.w, this.h)
-    ctx.fillStyle = COLORS.bg
+    ctx.fillStyle = this.colors.bg
     ctx.fillRect(0, 0, this.w, this.h)
 
     this.chartW = this.w - PADDING.left - PADDING.right
@@ -384,55 +429,18 @@ export class KlineEngine {
 
   /**
    * 时间戳 → Canvas x 像素
+   *
    * 分段模式: 只累加视口内有效交易时长, gaps 不占像素。
+   * 超出视口的蜡烛会线性外推 (负 x 或 > chartW), 不会堆叠在边界。
    * 无段模式: 线性映射。
    */
   private tsToX(ts: number): number {
-    // 无段: 线性映射
     if (this.segments.length === 0) {
       const range = this.viewEndMs - this.viewStartMs
       if (range <= 0) return PADDING.left + this.chartW / 2
       return PADDING.left + ((ts - this.viewStartMs) / range) * this.chartW
     }
 
-    // 有段: 累加活跃交易时长
-    if (this.totalSegmentMs <= 0) return PADDING.left + this.chartW / 2
-
-    let totalMs = 0   // 视口内所有段的总活跃时间
-    let cumMs = 0     // 从视口起点到目标 ts 的累计活跃时间
-    let found = false
-
-    for (const seg of this.segments) {
-      const s = Math.max(seg.startMs, this.viewStartMs)
-      const e = Math.min(seg.endMs, this.viewEndMs)
-      if (s >= e) continue                        // 该段不在视口内, 跳过
-      const dur = e - s
-      totalMs += dur
-      if (!found) {
-        if (ts <= e) {
-          cumMs += ts < s ? 0 : ts - s            // ts 在该段内
-          found = true
-        } else {
-          cumMs += dur                             // ts 在该段之后, 全段计入
-        }
-      }
-    }
-
-    if (totalMs <= 0) return PADDING.left + this.chartW / 2
-    return PADDING.left + (cumMs / totalMs) * this.chartW
-  }
-
-  /**
-   * Canvas x → 时间戳 (tsToX 的反函数)
-   */
-  private xToTs(x: number): number {
-    // 无段: 线性反查
-    if (this.segments.length === 0) {
-      const range = this.viewEndMs - this.viewStartMs
-      return this.viewStartMs + ((x - PADDING.left) / this.chartW) * range
-    }
-
-    // 有段: 反查落在哪个段的哪个位置
     let totalMs = 0
     for (const seg of this.segments) {
       const s = Math.max(seg.startMs, this.viewStartMs)
@@ -440,9 +448,66 @@ export class KlineEngine {
       if (s >= e) continue
       totalMs += e - s
     }
-    if (totalMs <= 0) return 0
+    if (totalMs <= 0) return PADDING.left + this.chartW / 2
+
+    let cumMs = 0
+    let found = false
+
+    for (const seg of this.segments) {
+      const s = Math.max(seg.startMs, this.viewStartMs)
+      const e = Math.min(seg.endMs, this.viewEndMs)
+      if (s >= e) continue
+      const dur = e - s
+
+      if (ts < s) {
+        cumMs += ts - s                   // 外推: 视口左侧之外 → 负值
+        found = true
+        break
+      } else if (ts <= e) {
+        cumMs += ts - s                   // 在段内: 正常累加
+        found = true
+        break
+      } else {
+        cumMs += dur                      // ts 在此段之后: 计入全段
+      }
+    }
+
+    if (!found) {
+      // ts > 最后可见段的结尾 → 外推右侧
+      const lastE = Math.min(this.segments[this.segments.length - 1].endMs, this.viewEndMs)
+      cumMs += ts - lastE
+    }
+
+    return PADDING.left + (cumMs / totalMs) * this.chartW
+  }
+
+  /**
+   * Canvas x → 时间戳 (tsToX 的反函数)
+   *
+   * 分段模式: 反查 x 落在哪个段的哪个位置。
+   * 超出视口左侧 → 外推返回 viewStartMs 之前的时刻。
+   * 超出视口右侧 → 外推返回 viewEndMs 之后的时刻。
+   */
+  private xToTs(x: number): number {
+    if (this.segments.length === 0) {
+      const range = this.viewEndMs - this.viewStartMs
+      return this.viewStartMs + ((x - PADDING.left) / this.chartW) * range
+    }
+
+    let totalMs = 0
+    for (const seg of this.segments) {
+      const s = Math.max(seg.startMs, this.viewStartMs)
+      const e = Math.min(seg.endMs, this.viewEndMs)
+      if (s >= e) continue
+      totalMs += e - s
+    }
+    if (totalMs <= 0) return this.viewStartMs
 
     const targetMs = ((x - PADDING.left) / this.chartW) * totalMs
+
+    // 外推左侧: targetMs < 0 → 返回 viewStartMs - 偏移
+    if (targetMs < 0) return this.viewStartMs + targetMs
+
     let cumMs = 0
     for (const seg of this.segments) {
       const s = Math.max(seg.startMs, this.viewStartMs)
@@ -450,12 +515,13 @@ export class KlineEngine {
       if (s >= e) continue
       const dur = e - s
       if (targetMs >= cumMs && targetMs <= cumMs + dur) {
-        return s + (targetMs - cumMs)                    // 命中该段
+        return s + (targetMs - cumMs)
       }
       cumMs += dur
     }
 
-    return this.viewEndMs                                 // 超出右边界, 返回最右
+    // 外推右侧: targetMs > totalMs → 返回 viewEndMs + 超出的偏移
+    return this.viewEndMs + (targetMs - totalMs)
   }
 
   /**
@@ -489,7 +555,7 @@ export class KlineEngine {
 
   /** K线区 6 条横线; 成交量区 3 条横线 */
   private drawGrid(ctx: CanvasRenderingContext2D) {
-    ctx.strokeStyle = COLORS.grid
+    ctx.strokeStyle = this.colors.grid
     ctx.lineWidth = 1
     for (let i = 0; i <= 5; i++) {
       const y = PADDING.top + (this.chartH * i) / 5
@@ -503,17 +569,17 @@ export class KlineEngine {
 
   /** 图表外框 */
   private drawBorder(ctx: CanvasRenderingContext2D) {
-    ctx.strokeStyle = COLORS.axisLine
+    ctx.strokeStyle = this.colors.axisLine
     ctx.strokeRect(PADDING.left, PADDING.top, this.chartW, this.chartH + this.volH)
   }
 
   /** 无数据占位 */
   private drawPlaceholder(ctx: CanvasRenderingContext2D) {
-    ctx.fillStyle = COLORS.text
+    ctx.fillStyle = this.colors.text
     ctx.font = "13px -apple-system, sans-serif"
     ctx.textAlign = "center"
     ctx.textBaseline = "middle"
-    ctx.fillText("暂无数据", PADDING.left + this.chartW / 2, PADDING.top + this.chartH / 2)
+    // ctx.fillText("暂无数据", PADDING.left + this.chartW / 2, PADDING.top + this.chartH / 2)
   }
 
   /**
@@ -527,8 +593,8 @@ export class KlineEngine {
       if (x < PADDING.left - 10 || x > PADDING.left + this.chartW + 10) continue
 
       const isUp = c.close >= c.open
-      ctx.strokeStyle = isUp ? COLORS.up : COLORS.down
-      ctx.fillStyle = isUp ? COLORS.up : COLORS.down
+      ctx.strokeStyle = isUp ? this.colors.up : this.colors.down
+      ctx.fillStyle = isUp ? this.colors.up : this.colors.down
       ctx.lineWidth = 1
 
       // 影线
@@ -554,14 +620,14 @@ export class KlineEngine {
       const x = this.tsToX(c.ts)
       if (x < PADDING.left - 10 || x > PADDING.left + this.chartW + 10) continue
       const h = Math.max(1, (c.volume / maxVol) * this.volH)
-      ctx.fillStyle = c.close >= c.open ? COLORS.volUp : COLORS.volDown
+      ctx.fillStyle = c.close >= c.open ? this.colors.volUp : this.colors.volDown
       ctx.fillRect(x - bodyW / 2, base + this.volH - h, bodyW, h)
     }
   }
 
   /** 左侧价格轴, 6 档刻度 */
   private drawPriceAxis(ctx: CanvasRenderingContext2D, minP: number, maxP: number) {
-    ctx.fillStyle = COLORS.textBright
+    ctx.fillStyle = this.colors.textBright
     ctx.font = "11px monospace"
     ctx.textAlign = "left"
     ctx.textBaseline = "middle"
@@ -579,10 +645,10 @@ export class KlineEngine {
    * 超出图表区域 ±50px 的标签不画
    */
   private drawTimeAxis(ctx: CanvasRenderingContext2D, candles: Candle[]) {
-    ctx.fillStyle = COLORS.textBright
-    ctx.font = "20px monospace"
+    ctx.fillStyle = this.colors.textBright
+    ctx.font = "bolder 16px consolas"
     ctx.textAlign = "center"
-    const ay = this.h - PADDING.bottom + 18
+    const ay = this.h - PADDING.bottom
 
     // 两段模式
     if (this.segments.length >= 2 && this._visibleTradingMs() > 0) {
@@ -625,7 +691,7 @@ export class KlineEngine {
     const { mouseX: mx, mouseY: my } = this
     if (mx < PADDING.left || mx > PADDING.left + this.chartW) return
     ctx.save()
-    ctx.strokeStyle = COLORS.crosshair
+    ctx.strokeStyle = this.colors.crosshair
     ctx.lineWidth = 1
     ctx.setLineDash([4, 4])
     ctx.beginPath(); ctx.moveTo(mx, PADDING.top); ctx.lineTo(mx, this.chartH + PADDING.top + this.volH); ctx.stroke()
@@ -638,9 +704,9 @@ export class KlineEngine {
     const timeLabel = `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`
     const tw = ctx.measureText(timeLabel).width + 12
     const ly = this.h - PADDING.bottom + 2
-    ctx.fillStyle = COLORS.crosshairLabel
+    ctx.fillStyle = this.colors.crosshairLabel
     ctx.fillRect(mx - tw / 2, ly, tw, 18)
-    ctx.fillStyle = COLORS.textWhite
+    ctx.fillStyle = this.colors.textWhite
     ctx.font = "12px monospace"
     ctx.textAlign = "center"
     ctx.fillText(timeLabel, mx, ly + 13)
@@ -649,9 +715,9 @@ export class KlineEngine {
     const price = this.lastMinPrice + ((this.chartH + PADDING.top - my) / this.chartH) * (this.lastMaxPrice - this.lastMinPrice)
     const label = price.toFixed(2)
     const plw = ctx.measureText(label).width + 10
-    ctx.fillStyle = COLORS.crosshairLabel
+    ctx.fillStyle = this.colors.crosshairLabel
     ctx.fillRect(PADDING.left - plw - 4, my - 10, plw, 18)
-    ctx.fillStyle = COLORS.textWhite
+    ctx.fillStyle = this.colors.textWhite
     ctx.font = "600 12px monospace"
     ctx.textAlign = "right"
     ctx.fillText(label, PADDING.left - 6, my + 3)
@@ -693,10 +759,10 @@ export class KlineEngine {
     // 半透明暗底 + 细边框 + 亮色文字
     ctx.fillStyle = "rgba(22,27,33,0.92)"
     ctx.fillRect(tx, ty, rectW, rowsH)
-    ctx.strokeStyle = COLORS.axisLine
+    ctx.strokeStyle = this.colors.axisLine
     ctx.lineWidth = 1
     ctx.strokeRect(tx, ty, rectW, rowsH)
-    ctx.fillStyle = COLORS.textBright
+    ctx.fillStyle = this.colors.textBright
     ctx.textAlign = "left"
     ctx.textBaseline = "middle"
     for (let i = 0; i < rows.length; i++) {

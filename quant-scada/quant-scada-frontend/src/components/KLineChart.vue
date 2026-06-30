@@ -8,13 +8,30 @@
       <span v-if="loading" class="loading-bars">
         <span class="bar" v-for="i in 5" :key="i" :style="{ animationDelay: i * 0.12 + 's' }" />
       </span>
+      <span v-else class="no-data">暂无数据</span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import { KlineEngine } from './KlineEngine'
+// ============================================================
+// K 线图表组件 — Canvas 渲染的 K 线图, 支持缩放/拖拽/十字光标
+// ============================================================
+// Props:
+//   candles      原始 K 线数据 (从 API 返回)
+//   coverVisible 是否显示遮罩 (loading / 无数据)
+//   loading      是否为加载中状态
+//   date         当前查询日期 (用于构建交易时段)
+//   period       最小缩放周期 (如 "5s"/"1m"), 决定缩放下限
+//
+// 初始化时序:
+//   onMounted 创建 engine → 立即应用 date + period + viewport
+//   之后 date/period watcher (均 immediate) 也可触发初始化
+// ============================================================
+
+import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { KlineEngine, DARK_CHART_COLORS, LIGHT_CHART_COLORS } from './KlineEngine'
+import { useSettingsStore } from '@/stores/settings'
 import type { Candle } from './KlineEngine'
 import type { KlineCandle } from '@/api/market'
 
@@ -33,24 +50,35 @@ const emit = defineEmits<{
 const wrapRef = ref<HTMLDivElement | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 
+const settingsStore = useSettingsStore()
+
 let engine: KlineEngine | null = null
 let candlesCache: Candle[] = []
 let rafId = 0
 let isDragging = false
 let lastX = 0
 
+/** 将当前主题配色方案同步到 engine */
+function syncTheme() {
+  if (!engine) return
+  engine.setColors(settingsStore.theme === 'light' ? LIGHT_CHART_COLORS : DARK_CHART_COLORS)
+}
+
+/** API 格式 → 引擎内部 Candle 格式 */
 function toEngine(c: KlineCandle): Candle {
   return { ts: new Date(c.ts).getTime(), open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }
 }
 
 function toEngineList(raw: KlineCandle[]) { return raw.map(toEngine) }
 
+/** 渲染循环 */
 function frame() {
   if (!engine) return
   engine.render(candlesCache)
   rafId = requestAnimationFrame(frame)
 }
 
+/** 将十字光标数据 emit 给父组件 */
 function emitCrosshair() {
   if (!engine || props.coverVisible) return
   const data = engine.getCrosshairData(candlesCache)
@@ -67,6 +95,8 @@ function emitCrosshair() {
     })
   }
 }
+
+// ---- 鼠标事件 ----
 
 function onMouseDown(e: MouseEvent) { isDragging = true; lastX = e.clientX }
 function onMouseUp() { isDragging = false }
@@ -104,27 +134,47 @@ function onClick(e: MouseEvent) {
 
 function handleResize() { engine?.resize() }
 
-watch(() => props.candles, async (raw) => {
+// ---- Watchers ----
+
+/** 蜡烛数据变更 → 仅更新缓存, 不重建 engine / 不重置视口 */
+watch(() => props.candles, (raw) => {
   candlesCache = toEngineList(raw || [])
-  await nextTick()
-  if (!engine && canvasRef.value) engine = new KlineEngine(canvasRef.value)
-  if (!rafId) frame()
 }, { deep: true, immediate: true })
 
+/** 日期变更 → 重建交易时段 + 重置视口 */
 watch(() => props.date, (d) => {
   if (!d || !engine) return
   engine.setDay(d)
   engine.resetPriceRange()
   engine.resetViewport(candlesCache)
-})
+}, { immediate: true })
 
+/** 缩放周期变更 → 更新缩放下限 (保留当前视口) */
 watch(() => props.period, (p) => {
   if (engine) engine.setMinPeriod(p)
-})
+}, { immediate: true })
 
+/** 主题切换 → 同步配色方案到 engine (无需重绘, 下一帧自动生效) */
+watch(() => settingsStore.theme, () => { syncTheme() })
+
+// ---- 生命周期 ----
+
+/**
+ * 挂载时创建 engine 并立即应用当前 props 和主题。
+ * 这是 engine 创建的唯一入口, candles/date/period watcher 仅处理后续变更。
+ */
 onMounted(() => {
   window.addEventListener('resize', handleResize)
-  if (canvasRef.value && !engine) engine = new KlineEngine(canvasRef.value)
+  if (canvasRef.value) {
+    engine = new KlineEngine(canvasRef.value)
+    syncTheme()
+    engine.setMinPeriod(props.period)
+    if (props.date) {
+      engine.setDay(props.date)
+      engine.resetViewport(candlesCache)
+      engine.resetPriceRange()
+    }
+  }
   if (!rafId) frame()
 })
 
@@ -142,7 +192,7 @@ onUnmounted(() => {
   position: relative;
   overflow: hidden;
   cursor: crosshair;
-  background-color: #0d1117;
+  background-color: var(--bg-primary);
 }
 
 .chart-wrap canvas {
@@ -154,7 +204,7 @@ onUnmounted(() => {
 .cover-mask {
   position: absolute;
   inset: 0;
-  background: rgba(255, 255, 255, 0.25);
+  background: var(--cover-mask-bg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -170,20 +220,19 @@ onUnmounted(() => {
 .loading-bars {
   display: flex;
   align-items: flex-end;
-  gap: 4px;
-  height: 40px;
+  gap: 6px;
+  height: 48px;
 }
 
 .loading-bars .bar {
-  width: 6px;
-  height: 10px;
-  border-radius: 3px;
-  background: var(--accent-info);
+  width: 8px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, var(--accent-info) 0%, var(--accent-info-faded) 100%);
   animation: loading-wave 0.8s ease-in-out infinite;
 }
 
 @keyframes loading-wave {
-  0%, 100% { height: 10px; opacity: 0.4; }
-  50% { height: 30px; opacity: 1; }
+  0%, 100% { height: 12px; opacity: 0.3; }
+  50% { height: 40px; opacity: 1; }
 }
 </style>

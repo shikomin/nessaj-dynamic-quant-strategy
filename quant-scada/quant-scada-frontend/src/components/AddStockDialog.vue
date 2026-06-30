@@ -166,7 +166,7 @@ watch(() => props.visible, (v) => {
 }
 
 .market-radio.active {
-  color: #fff;
+  color: var(--text-on-accent);
   background-color: var(--accent-info);
   border-color: var(--accent-info);
 }
@@ -250,12 +250,12 @@ watch(() => props.visible, (v) => {
 
 .item-tag.sub {
   color: var(--accent-info);
-  background-color: rgba(88, 166, 255, 0.1);
+  background-color: var(--accent-info-subtle);
 }
 
 .item-tag.sector {
   color: var(--accent-success);
-  background-color: rgba(63, 185, 80, 0.1);
+  background-color: var(--accent-success-subtle);
 }
 
 .btn-add {
