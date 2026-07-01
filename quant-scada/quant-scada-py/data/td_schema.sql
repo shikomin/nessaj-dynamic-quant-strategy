@@ -20,7 +20,7 @@ CREATE DATABASE IF NOT EXISTS quant_scada_rt
   WAL_FSYNC_PERIOD 3000;
 
 -- 1.1 股票实时数据超表
---     子表命名: rt_{code}  例: rt_000001_SZ
+--     子表命名: rt_{market}_{code}  例: rt_SZ_000001
 CREATE STABLE IF NOT EXISTS quant_scada_rt.stock_rt_data (
   ts              TIMESTAMP,
   price           DOUBLE,
@@ -51,7 +51,7 @@ CREATE STABLE IF NOT EXISTS quant_scada_rt.stock_rt_data (
 );
 
 -- 1.2 指数实时数据超表
---     子表命名: idx_rt_{code}  例: idx_rt_000001
+--     子表命名: idx_rt_{market}_{code}  例: idx_rt_SH_000001
 CREATE STABLE IF NOT EXISTS quant_scada_rt.index_rt_data (
   ts              TIMESTAMP,
   price           DOUBLE,
@@ -104,7 +104,7 @@ CREATE DATABASE IF NOT EXISTS quant_scada_hist
   WAL_FSYNC_PERIOD 3000;
 
 -- 2.1 股票历史1分钟K线超表
---     子表命名: hk_{code}  例: hk_000001_SZ
+--     子表命名: hist_{market}_{code}  例: hist_SZ_000001
 CREATE STABLE IF NOT EXISTS quant_scada_hist.stock_hist_kline_1m (
   ts              TIMESTAMP,
   open            DOUBLE,
@@ -119,7 +119,7 @@ CREATE STABLE IF NOT EXISTS quant_scada_hist.stock_hist_kline_1m (
 );
 
 -- 2.2 指数历史1分钟K线超表
---     子表命名: idx_hk_{code}  例: idx_hk_000001
+--     子表命名: idx_hist_{market}_{code}  例: idx_hist_SH_000001
 CREATE STABLE IF NOT EXISTS quant_scada_hist.index_hist_kline_1m (
   ts              TIMESTAMP,
   open            DOUBLE,

@@ -88,14 +88,14 @@ def build_insert_sql(stock_code, market, batch):
         )
     values_str = " ".join(values_parts)
     return (
-        f"INSERT INTO {HIST_DB}.hk_{stock_code} "
+        f"INSERT INTO {HIST_DB}.hist_{market}_{stock_code} "
         f"USING {HIST_DB}.stock_hist_kline_1m "
         f"TAGS ('{stock_code}', '{market}') "
         f"VALUES {values_str}"
     )
 
 
-def build_index_insert_sql(index_code, index_name, batch):
+def build_index_insert_sql(index_code, market, index_name, batch):
     """构建批量 INSERT SQL (指数)"""
     values_parts = []
     for row in batch:
@@ -105,7 +105,7 @@ def build_index_insert_sql(index_code, index_name, batch):
         )
     values_str = " ".join(values_parts)
     return (
-        f"INSERT INTO {HIST_DB}.idx_hk_{index_code} "
+        f"INSERT INTO {HIST_DB}.idx_hist_{market}_{index_code} "
         f"USING {HIST_DB}.index_hist_kline_1m "
         f"TAGS ('{index_code}', '{index_name}') "
         f"VALUES {values_str}"
@@ -126,7 +126,7 @@ def import_stock(filepath, stock_code, market):
     try:
         # 先删旧数据
         try:
-            conn.execute(f"DELETE FROM {HIST_DB}.hk_{stock_code_str}")
+            conn.execute(f"DELETE FROM {HIST_DB}.hist_{market_str}_{stock_code_str}")
         except Exception:
             pass
 
@@ -145,7 +145,7 @@ def import_stock(filepath, stock_code, market):
     return total
 
 
-def import_index(filepath, index_code, index_name):
+def import_index(filepath, index_code, market, index_name):
     """导入单只指数的所有1分钟K线到 TDengine"""
     _, _, records = parse_file(filepath, index_code, '')
     if not records:
@@ -158,13 +158,13 @@ def import_index(filepath, index_code, index_name):
 
     try:
         try:
-            conn.execute(f"DELETE FROM {HIST_DB}.idx_hk_{index_code}")
+            conn.execute(f"DELETE FROM {HIST_DB}.idx_hist_{market}_{index_code}")
         except Exception:
             pass
 
         for i in range(0, len(records), BATCH_SIZE):
             batch = records[i:i + BATCH_SIZE]
-            sql = build_index_insert_sql(index_code, index_name, batch)
+            sql = build_index_insert_sql(index_code, market, index_name, batch)
             try:
                 conn.execute(sql)
                 total += len(batch)
@@ -243,7 +243,7 @@ def main():
             if key in stock_map:
                 stock_files.append((fname, code, market))
             elif code in INDEX_NAME_MAP:
-                index_files.append((fname, code, index_name(prefix, code)))
+                index_files.append((fname, code, market, index_name(prefix, code)))
             else:
                 skipped += 1
 
@@ -271,8 +271,8 @@ def main():
         futures = {}
         for fp, code, mkt in stock_files:
             futures[pool.submit(import_stock, fp, code, mkt)] = ("stock", code)
-        for fp, code, name in index_files:
-            futures[pool.submit(import_index, fp, code, name)] = ("index", code)
+        for fp, code, mkt, name in index_files:
+            futures[pool.submit(import_index, fp, code, mkt, name)] = ("index", code)
 
         for future in as_completed(futures):
             ftype, code = futures[future]

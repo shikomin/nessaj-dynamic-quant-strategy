@@ -757,9 +757,9 @@ export class KlineEngine {
     if (ty + rowsH > this.h - PADDING.bottom - 2) ty = this.h - PADDING.bottom - rowsH - 2
 
     // 半透明暗底 + 细边框 + 亮色文字
-    ctx.fillStyle = "rgba(22,27,33,0.92)"
+    ctx.fillStyle = "rgba(255,255,255,0.57)"
     ctx.fillRect(tx, ty, rectW, rowsH)
-    ctx.strokeStyle = this.colors.axisLine
+    ctx.strokeStyle = this.colors.bg
     ctx.lineWidth = 1
     ctx.strokeRect(tx, ty, rectW, rowsH)
     ctx.fillStyle = this.colors.textBright

@@ -36,11 +36,19 @@ class TDWriter:
             try:
                 count = 0
                 for r in chunk:
-                    code = r.get("ts_code", "").replace(".", "_")
+                    ts_code = r.get("ts_code", "")
+                    if "." in ts_code:
+                        parts = ts_code.split(".")
+                        code = parts[0]
+                        market = parts[-1]
+                    else:
+                        code = ts_code
+                        market = ""
+                    table_name = f"rt_{market}_{code}" if market else f"rt_{code}"
                     sql = (
-                        f"INSERT INTO {self.rt_db}.rt_{code} "
+                        f"INSERT INTO {self.rt_db}.{table_name} "
                         f"USING {self.rt_db}.stock_rt_data "
-                        f"TAGS ('{r.get('ts_code','')}', '{r.get('name','')}', '{r.get('ts_code','').split('.')[-1] if '.' in r.get('ts_code','') else ''}') "
+                        f"TAGS ('{ts_code}', '{r.get('name','')}', '{market}') "
                         f"VALUES ("
                         f"'{now}', "
                         f"{r.get('close', 0) or 0}, "
@@ -91,11 +99,19 @@ class TDWriter:
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             for r in records:
-                code = r.get("ts_code", "").replace(".", "_")
+                ts_code = r.get("ts_code", "")
+                if "." in ts_code:
+                    parts = ts_code.split(".")
+                    code = parts[0]
+                    market = parts[-1]
+                else:
+                    code = ts_code
+                    market = ""
+                table_name = f"idx_rt_{market}_{code}" if market else f"idx_rt_{code}"
                 sql = (
-                    f"INSERT INTO {self.rt_db}.idx_rt_{code} "
+                    f"INSERT INTO {self.rt_db}.{table_name} "
                     f"USING {self.rt_db}.index_rt_data "
-                    f"TAGS ('{r.get('ts_code','')}', '{r.get('name','')}', '{r.get('ts_code','').split('.')[-1] if '.' in r.get('ts_code','') else ''}') "
+                    f"TAGS ('{ts_code}', '{r.get('name','')}', '{market}') "
                     f"VALUES ("
                     f"'{now}', "
                     f"{r.get('close', 0) or 0}, "
@@ -220,10 +236,14 @@ class TDWriter:
             return
         conn = self._new_conn()
         try:
-            table_prefix = "idx_hk_" if is_index else "hk_"
+            prefix = "idx_hist_" if is_index else "hist_"
             stable = "index_hist_kline_1m" if is_index else "stock_hist_kline_1m"
             for r in records:
-                code = r.get("code", "").replace(".", "_")
+                raw_code = r.get("code", "")
+                ts_code = r.get("ts_code", "")
+                code = raw_code
+                market = ts_code.split(".")[-1] if "." in ts_code else ""
+                table_name = f"{prefix}{market}_{code}" if market else f"{prefix}{code}"
                 trade_time = r.get("trade_time", "")
                 if len(trade_time) == 12:
                     ts = f"{trade_time[:4]}-{trade_time[4:6]}-{trade_time[6:8]} {trade_time[8:10]}:{trade_time[10:12]}:00.000"
@@ -234,12 +254,12 @@ class TDWriter:
                 if is_index:
                     extra_tags = f", '{r.get('name', '')}'"
                 else:
-                    extra_tags = f", '{r.get('ts_code','').split('.')[-1] if '.' in r.get('ts_code','') else ''}'"
+                    extra_tags = f", '{market}'"
 
                 sql = (
-                    f"INSERT INTO {self.hist_db}.{table_prefix}{code} "
+                    f"INSERT INTO {self.hist_db}.{table_name} "
                     f"USING {self.hist_db}.{stable} "
-                    f"TAGS ('{r.get('code', '')}'{extra_tags}) "
+                    f"TAGS ('{code}'{extra_tags}) "
                     f"VALUES ("
                     f"'{ts}', "
                     f"{r.get('open', 0) or 0}, "

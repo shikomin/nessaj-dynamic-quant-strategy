@@ -28,13 +28,13 @@ public class KLineService {
      * @param limit  返回条数 (默认240)
      */
     @DS("tdengine")
-    public List<KLineVO> queryKline(String code, String period, String start, String end, int limit) {
+    public List<KLineVO> queryKline(String code, String market, String period, String start, String end, int limit) {
         if (!VALID_PERIODS.contains(period)) {
             period = "1m";
         }
         if (limit <= 0) limit = 240;
 
-        String tableName = HIST_DB + ".hk_" + code;
+        String tableName = HIST_DB + ".hist_" + market.toUpperCase() + "_" + code;
         String sql = buildSql(tableName, period, start, end, limit);
 
         List<KLineVO> result = new ArrayList<>();
@@ -66,8 +66,8 @@ public class KLineService {
     }
 
     @DS("tdengine")
-    public List<String> availableDates(String code) {
-        String sql = "SELECT ts FROM " + HIST_DB + ".hk_" + code + " ORDER BY ts ASC";
+    public List<String> availableDates(String code, String market) {
+        String sql = "SELECT ts FROM " + HIST_DB + ".hist_" + market.toUpperCase() + "_" + code + " ORDER BY ts ASC";
         java.util.LinkedHashSet<String> dates = new java.util.LinkedHashSet<>();
         try (Connection conn = dataSource.getConnection();
              Statement stmt = conn.createStatement();

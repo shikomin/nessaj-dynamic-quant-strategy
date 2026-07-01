@@ -17,17 +17,19 @@ public class KLineController {
 
     @GetMapping("/kline")
     public CommonResult getKline(@RequestParam String code,
+                                  @RequestParam(defaultValue = "SH") String market,
                                   @RequestParam(defaultValue = "1m") String period,
                                   @RequestParam(required = false) String start,
                                   @RequestParam(required = false) String end,
                                   @RequestParam(defaultValue = "240") int limit) {
-        List<KLineVO> list = klineService.queryKline(code, period, start, end, limit);
+        List<KLineVO> list = klineService.queryKline(code, market, period, start, end, limit);
         return CommonResult.ok(list);
     }
 
     @GetMapping("/kline/dates")
-    public CommonResult getKlineDates(@RequestParam String code) {
-        List<String> dates = klineService.availableDates(code);
+    public CommonResult getKlineDates(@RequestParam String code,
+                                       @RequestParam(defaultValue = "SH") String market) {
+        List<String> dates = klineService.availableDates(code, market);
         return CommonResult.ok(dates);
     }
 }

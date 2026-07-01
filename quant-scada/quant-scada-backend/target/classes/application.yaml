@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: quant-scada
+  #默认 test 配置
+  profiles:
+    active: dev
+  output:
+    ansi:
+      enabled: always
+server:
+  port: 25792
+
+jwt:
+  secret: NESSAJ-QuantScada-JwtSecretKey-2026-06-25-MustBeLongEnough
+  expiration: 432000000

@@ -1,0 +1,43 @@
+spring:
+  datasource:
+    dynamic:
+      primary: mysql
+      druid:
+        initial-size: 5
+        max-active: 20
+        min-idle: 5
+        max-wait: 5000
+      datasource:
+        mysql:
+          driver-class-name: com.mysql.cj.jdbc.Driver
+          url: jdbc:mysql://124.221.130.19:3306/quant_scada?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true
+          username: root
+          password: Password@111
+        tdengine:
+          driver-class-name: com.taosdata.jdbc.ws.WebSocketDriver
+          url: jdbc:TAOS-WS://124.221.130.19:6041
+          username: root
+          password: Nessaj@123
+          druid:
+            initial-size: 2
+            max-active: 5
+            min-idle: 2
+            max-wait: 5000
+            validation-query: SELECT SERVER_VERSION()
+
+  redis:
+    host: 124.221.130.19
+    port: 6379
+    password: Password@111
+    database: 1
+    lettuce:
+      pool:
+        max-active: 10
+        max-idle: 5
+        min-idle: 2
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.nessaj.quant.scada.auth.entity
+  configuration:
+    map-underscore-to-camel-case: true

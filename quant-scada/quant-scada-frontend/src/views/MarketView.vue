@@ -228,7 +228,7 @@ function isPeriodAvailable(p: string): boolean {
 async function loadDates() {
   if (!store.selectedCode) return
   try {
-    const res: any = await fetchKlineDatesApi(store.selectedCode)
+    const res: any = await fetchKlineDatesApi(store.selectedCode, store.selectedMarket)
     if (res.code === 200) availableDates.value = res.data || []
   } catch { availableDates.value = [] }
 }
@@ -241,7 +241,7 @@ async function loadKline() {
   try {
     const start = currentDate.value ? `${currentDate.value} 00:00:00` : undefined
     const end = currentDate.value ? `${currentDate.value} 23:59:59` : undefined
-    const res: any = await fetchKlineApi(store.selectedCode, period.value, start, end)
+    const res: any = await fetchKlineApi(store.selectedCode, store.selectedMarket, period.value, start, end)
     if (res.code === 200) {
       candles.value = res.data
     } else {
