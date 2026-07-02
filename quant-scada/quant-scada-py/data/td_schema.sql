@@ -11,10 +11,10 @@ CREATE DATABASE IF NOT EXISTS quant_scada_rt
   PRECISION 'ms'
   KEEP 3
   DURATION 1
-  BUFFER 256
-  PAGES 256
+  BUFFER 64        -- 从32提升到64，应对5秒写入脉冲
+  PAGES 64
   PAGESIZE 4
-  CACHEMODEL 'both'
+  CACHEMODEL 'none'
   COMP 1
   WAL_LEVEL 1
   WAL_FSYNC_PERIOD 3000;
@@ -29,20 +29,10 @@ CREATE STABLE IF NOT EXISTS quant_scada_rt.stock_rt_data (
   low             DOUBLE,
   pre_close       DOUBLE,
   change_pct      DOUBLE,
+  change_amount   DOUBLE,
   volume          BIGINT,
   amount          DOUBLE,
   turnover_rate   DOUBLE,
-  pe_ttm          DOUBLE,
-  eps_ttm         DOUBLE,
-  total_mv        DOUBLE,
-  circulation_mv  DOUBLE,
-  bid1_price      DOUBLE,
-  bid1_vol        BIGINT,
-  ask1_price      DOUBLE,
-  ask1_vol        BIGINT,
-  auction_vol     BIGINT,
-  auction_val     DOUBLE,
-  auction_px      DOUBLE,
   amplitude       DOUBLE
 ) TAGS (
   stock_code  VARCHAR(16),
@@ -60,6 +50,7 @@ CREATE STABLE IF NOT EXISTS quant_scada_rt.index_rt_data (
   low             DOUBLE,
   pre_close       DOUBLE,
   change_pct      DOUBLE,
+  change_amount   DOUBLE,
   volume          BIGINT,
   amount          DOUBLE
 ) TAGS (
@@ -95,10 +86,10 @@ CREATE DATABASE IF NOT EXISTS quant_scada_hist
   PRECISION 'ms'
   KEEP 150
   DURATION 5
-  BUFFER 256
-  PAGES 256
+  BUFFER 64        -- 同上
+  PAGES 64
   PAGESIZE 4
-  CACHEMODEL 'both'
+  CACHEMODEL 'none'
   COMP 2
   WAL_LEVEL 1
   WAL_FSYNC_PERIOD 3000;

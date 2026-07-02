@@ -6,3 +6,4 @@ python-dotenv>=1.0
 pymysql>=1.1
 zzshare>=0.4.0
 pyyaml>=6.0
+alphafeed>=0.1.4

@@ -23,3 +23,6 @@ class Config:
     MYSQL_USER = os.getenv("MYSQL_USER", "root")
     MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "Password@111")
     MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "quant_scada")
+
+    ALPHAFEED_API_KEY = os.getenv("ALPHAFEED_API_KEY", "")
+    ALPHAFEED_COLLECT_INTERVAL = int(os.getenv("ALPHAFEED_COLLECT_INTERVAL_SECONDS", "60"))

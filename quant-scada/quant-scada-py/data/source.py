@@ -2,9 +2,23 @@ import logging
 import time
 from datetime import date
 from zzshare.client import DataApi
+from alphafeed import AlphaFeed
 from config.settings import Config
 
 logger = logging.getLogger(__name__)
+
+
+class AlphaFeedSource:
+
+    def __init__(self, api_key=None):
+        api_key = api_key or Config.ALPHAFEED_API_KEY
+        self._client = AlphaFeed(api_key=api_key)
+
+    def get_cn_stock_realtime(self, to_dataframe=False):
+        return self._client.quotes.get(universes=["CN_Stock"], to_dataframe=to_dataframe)
+
+    def close(self):
+        self._client.close()
 
 
 class ZZShareClient:
